@@ -1,0 +1,3 @@
+[submodule "packages/dnsmasq-regex-openwrt"]
+	path = packages/dnsmasq-regex-openwrt
+	url = https://github.com/lixingcong/dnsmasq-regex-openwrt
