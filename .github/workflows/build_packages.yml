@@ -14,17 +14,20 @@ jobs:
           - arm_cortex-a15_neon-vfpv4-23.05.2
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - name: Build
-        uses: openwrt/gh-action-sdk@main
+        uses: sunnyqeen/gh-action-sdk@main
         env:
           ARCH: ${{ matrix.arch }}
+          PACKAGES: dnsmasq-regex-openwrt
+          V: s
 
       - name: Store packages
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.arch}}-packages
-          path: bin/packages/${{ matrix.arch }}/packages/*.ipk
+          name: ${{ matrix.arch }}-packages
+          path: ${{ github.workspace }}/bin/packages/**/*.ipk
