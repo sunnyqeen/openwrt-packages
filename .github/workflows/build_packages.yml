@@ -10,8 +10,8 @@ jobs:
     strategy:
       matrix:
         arch:
-          - aarch64_cortex-a53-23.05.4
-          - arm_cortex-a15_neon-vfpv4-23.05.4
+          - mediatek-filogic-23.05.4
+          - ipq806x-generic-v23.05.4
 
     steps:
       - uses: actions/checkout@v4
