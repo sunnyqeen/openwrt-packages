@@ -30,4 +30,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.arch }}-packages
-          path: ${{ github.workspace }}/bin/packages/**/*.ipk
+          path: ${{ github.workspace }}/bin/**/*.ipk
