@@ -9,10 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch:
-          - mediatek-filogic-23.05.4
-          - ipq806x-generic-v23.05.4
-
+        target:
+          - mediatek/filogic
+          - ipq806x/generic
+        version:
+          - releases/23.05.4
     steps:
       - uses: actions/checkout@v4
         with:
@@ -22,7 +23,8 @@ jobs:
       - name: Build
         uses: sunnyqeen/gh-action-sdk@main
         env:
-          ARCH: ${{ matrix.arch }}
+          TARGET: ${{ matrix.target }}
+          VERSION_PATH: ${{ matrix.version }}
           PACKAGES: dnsmasq-regex-openwrt mac80211-update
           V: s
 
