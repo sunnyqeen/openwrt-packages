@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    name: ${{ matrix.arch }} build
+    name: ${{ matrix.version }}-${{ matrix.target }} build
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -27,9 +27,12 @@ jobs:
           VERSION_PATH: ${{ matrix.version }}
           PACKAGES: dnsmasq-regex-openwrt mac80211-update
           V: s
-
+      - name: Write artifact name
+        run: |
+          ARTIFACT_NAME=${{ matrix.version }}-${{ matrix.target }}-packages
+          echo ARTIFACT_NAME=${ARTIFACT_NAME//'/'/-} >> $GITHUB_ENV
       - name: Store packages
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.arch }}-packages
+          name: ${{ env.ARTIFACT_NAME }}
           path: ${{ github.workspace }}/bin/**/*.ipk
