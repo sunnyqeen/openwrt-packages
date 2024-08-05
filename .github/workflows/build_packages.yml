@@ -23,7 +23,7 @@ jobs:
         uses: sunnyqeen/gh-action-sdk@main
         env:
           ARCH: ${{ matrix.arch }}
-          PACKAGES: dnsmasq-regex-openwrt
+          PACKAGES: dnsmasq-regex-openwrt mac80211-update
           V: s
 
       - name: Store packages
