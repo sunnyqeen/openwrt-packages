@@ -48,6 +48,7 @@ jobs:
 
       - name: copy files to feeds repo
         run: |
+          bash ${{ github.workspace }}/.github/scripts/ipkg-make-index-all.sh ${{ github.workspace }}/bin/targets
           mkdir -p ${{ github.workspace }}/openwrt-feeds/${{ matrix.version }}/targets
           cp -r ${{ github.workspace }}/bin/targets/* ${{ github.workspace }}/openwrt-feeds/${{ matrix.version }}/targets
 
