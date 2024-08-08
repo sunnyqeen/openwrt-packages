@@ -35,4 +35,37 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
-          path: ${{ github.workspace }}/bin/**/*.ipk
+          path: ${{ github.workspace }}/bin/**/*
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          submodules: recursive
+          repository: 'sunnyqeen/openwrt-feeds'
+          path: 'openwrt-feeds'
+          token: ${{ secrets.ACTIONS_GITHUB_TOKEN }}
+
+      - name: copy files to feeds repo
+        run: |
+          mkdir -p ${{ github.workspace }}/openwrt-feeds/${{ matrix.version }}/targets
+          cp -r ${{ github.workspace }}/bin/targets/* ${{ github.workspace }}/openwrt-feeds/${{ matrix.version }}/targets
+
+      - name: Push to feeds repo
+        run : |
+          cd ${{ github.workspace }}/openwrt-feeds
+          git add .
+          changed=0
+          if ! git diff --cached --exit-code; then
+            changed=1
+          fi
+          echo "::notice::git status $changed"
+          if [ $changed -ne 0 ]; then
+            git config user.name "${{ github.actor }}"
+            git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
+            git commit -m "Update packages for ${{ matrix.target }}"
+            while ! git push -u origin main; do
+              sleep 3
+              git pull origin main
+            done
+          fi
