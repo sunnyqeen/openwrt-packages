@@ -12,6 +12,7 @@ jobs:
         target:
           - mediatek/filogic
           - ipq806x/generic
+          - ipq40xx/generic
         version:
           - releases/23.05.4
     steps:
