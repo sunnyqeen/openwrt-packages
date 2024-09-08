@@ -27,6 +27,6 @@ SHA256sum: $sha256sum\\
 Description:/" >> $pkg_dir/Packages
 		echo "" >> $pkg_dir/Packages
 	done
-	gzip -fk $pkg_dir/Packages
+	gzip -fkn $pkg_dir/Packages
 done
 exit 0
