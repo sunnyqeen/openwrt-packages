@@ -13,8 +13,9 @@ jobs:
           - mediatek/filogic
           - ipq806x/generic
           - ipq40xx/generic
+          - rockchip/armv8
         version:
-          - releases/23.05.4
+          - releases/23.05.5
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,8 +27,9 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           VERSION_PATH: ${{ matrix.version }}
-          PACKAGES: dnsmasq-regex-openwrt mac80211-update
+          PACKAGES: dnsmasq-regex-openwrt ocserv-update
           V: s
+          NO_REFRESH_CHECK: 1
       - name: Write artifact name
         run: |
           ARTIFACT_NAME=${{ matrix.version }}-${{ matrix.target }}-packages
@@ -49,9 +51,9 @@ jobs:
 
       - name: copy files to feeds repo
         run: |
-          bash ${{ github.workspace }}/.github/scripts/ipkg-make-index-all.sh ${{ github.workspace }}/bin/targets
-          mkdir -p ${{ github.workspace }}/openwrt-feeds/${{ matrix.version }}/targets
-          cp -r ${{ github.workspace }}/bin/targets/* ${{ github.workspace }}/openwrt-feeds/${{ matrix.version }}/targets
+          bash ${{ github.workspace }}/.github/scripts/ipkg-make-index-all.sh ${{ github.workspace }}/bin
+          mkdir -p ${{ github.workspace }}/openwrt-feeds/${{ matrix.version }}
+          cp -r ${{ github.workspace }}/bin/* ${{ github.workspace }}/openwrt-feeds/${{ matrix.version }}
 
       - name: Push to feeds repo
         run : |
