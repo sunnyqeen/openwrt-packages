@@ -27,7 +27,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           VERSION_PATH: ${{ matrix.version }}
-          PACKAGES: dnsmasq-regex-openwrt ocserv-update
+          PACKAGES: dnsmasq-regex-openwrt ocserv-update mbedtls-update
           V: s
           NO_REFRESH_CHECK: 1
       - name: Write artifact name
