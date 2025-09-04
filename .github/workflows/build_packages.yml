@@ -15,7 +15,7 @@ jobs:
           - ipq40xx/generic
           - rockchip/armv8
         version:
-          - releases/23.05.5
+          - releases/24.10.2
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,7 +27,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           VERSION_PATH: ${{ matrix.version }}
-          PACKAGES: dnsmasq-regex-openwrt ocserv-update mbedtls-update
+          PACKAGES: ocserv-update
           V: s
           NO_REFRESH_CHECK: 1
       - name: Write artifact name
