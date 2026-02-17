@@ -27,7 +27,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           VERSION_PATH: ${{ matrix.version }}
-          PACKAGES: ocserv-update
+          PACKAGES: ocserv-update openssl-update
           V: s
           NO_REFRESH_CHECK: 1
       - name: Write artifact name
