@@ -15,7 +15,8 @@ jobs:
           - ipq40xx/generic
           - rockchip/armv8
         version:
-          - releases/24.10.2
+          - releases/23.05.5
+          - releases/24.10.5
     steps:
       - uses: actions/checkout@v4
         with:
