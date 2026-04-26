@@ -1,0 +1,57 @@
+From eddd29f59bea4a5e68c2e28c51274760244728b9 Mon Sep 17 00:00:00 2001
+From: Grigory Trenin <grigory.trenin@gmail.com>
+Date: Thu, 16 Apr 2026 21:01:57 -0400
+Subject: [PATCH] Do not forward UDP until client is authenticated
+
+Do not forward DTLS packets until the client is authenticated to
+prevent the race between AUTH_COOKIE_REP and CMD_UDP_FD messages
+on the command socket.
+
+Closes #706
+
+Signed-off-by: Grigory Trenin <grigory.trenin@gmail.com>
+---
+ src/main.c | 17 ++++++++++++-----
+ 1 files changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/src/main.c b/src/main.c
+index f13086b0..fae5326c 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -716,14 +716,14 @@ static int forward_udp_to_owner(main_server_st *s, struct listener_st *listener)
+ 
+ 	if (s->msg_buffer[0] != 22) {
+ 		mslog(s, NULL, LOG_DEBUG,
+-		      "%s: unexpected DTLS content type: %u; possibly a firewall disassociated a UDP session",
++		      "%s: unexpected DTLS content type: %u; likely a stale packet from a closed session or expired NAT mapping",
+ 		      human_addr((struct sockaddr *)&cli_addr, cli_addr_size,
+ 				 tbuf, sizeof(tbuf)),
+ 		      (unsigned int)s->msg_buffer[0]);
+-		/* Here we received a non-client-hello packet. It may be that
+-		 * the client's NAT changed its UDP source port and the previous
+-		 * connection is invalidated. Try to see if we can simply match
+-		 * the IP address and forward the socket.
++		/* Here we received a non-client-hello packet. This could be an in-flight
++		 * packet destined to the worker that recently terminated, or a client whose
++		 * NAT changed its UDP source port, invalidating the previous connection.
++		 * Try to see if we can simply match the IP address and forward the socket.
+ 		 */
+ 		match_ip_only = 1;
+ 	} else {
+@@ -767,6 +767,13 @@ static int forward_udp_to_owner(main_server_st *s, struct listener_st *listener)
+ 	}
+ 
+ 	if (proc_to_send != 0) {
++		/* Avoid race between AUTH_COOKIE_REP and CMD_UDP_FD messages */
++		if (proc_to_send->status != PS_AUTH_COMPLETED) {
++			mslog(s, proc_to_send, LOG_DEBUG,
++			      "Discarding DTLS packet; the client is not authenticated yet");
++			goto fail;
++		}
++
+ 		UdpFdMsg msg = UDP_FD_MSG__INIT;
+ 
+ 		if (now - proc_to_send->udp_fd_receive_time <=
+-- 
+GitLab
+

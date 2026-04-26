@@ -1,0 +1,153 @@
+From a309ecead0866d2eec277aee6fb67aaa486af00e Mon Sep 17 00:00:00 2001
+From: Dimitri Papadopoulos
+ <3350651-DimitriPapadopoulos@users.noreply.gitlab.com>
+Date: Sat, 28 Feb 2026 15:35:30 +0100
+Subject: [PATCH] llhttp: updated to latest version 9.3.1
+
+Signed-off-by: Dimitri Papadopoulos <3350651-DimitriPapadopoulos@users.noreply.gitlab.com>
+---
+ src/llhttp/llhttp.c | 22 +++++++++++++---------
+ src/llhttp/llhttp.h | 22 +++++++++++-----------
+ 2 files changed, 23 insertions(+), 21 deletions(-)
+
+diff --git a/src/llhttp/llhttp.c b/src/llhttp/llhttp.c
+index aa4c4682..515ba512 100644
+--- a/src/llhttp/llhttp.c
++++ b/src/llhttp/llhttp.c
+@@ -10,7 +10,7 @@
+  #endif  /* _MSC_VER */
+ #endif  /* __SSE4_2__ */
+ 
+-#ifdef __ARM_NEON__
++#if defined(__ARM_NEON__) || defined(__ARM_NEON)
+  #include <arm_neon.h>
+ #endif  /* __ARM_NEON__ */
+ 
+@@ -1542,7 +1542,7 @@ static llparse_state_t llhttp__internal__run(
+         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 3, 1, 1, 1,
+         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+-        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
++        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0,
+         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+@@ -2625,7 +2625,7 @@ static llparse_state_t llhttp__internal__run(
+         goto s_n_llhttp__internal__n_header_value_otherwise;
+       }
+       #endif  /* __SSE4_2__ */
+-      #ifdef __ARM_NEON__
++      #if defined(__ARM_NEON__) || defined(__ARM_NEON)
+       while (endp - p >= 16) {
+         uint8x16_t input;
+         uint8x16_t single;
+@@ -2639,19 +2639,23 @@ static llparse_state_t llhttp__internal__run(
+         /* Find first character that does not match `ranges` */
+         single = vceqq_u8(input, vdupq_n_u8(0x9));
+         mask = single;
+-        single = vandq_u16(
++        single = vandq_u8(
+           vcgeq_u8(input, vdupq_n_u8(' ')),
+           vcleq_u8(input, vdupq_n_u8('~'))
+         );
+-        mask = vorrq_u16(mask, single);
+-        single = vandq_u16(
++        mask = vorrq_u8(mask, single);
++        single = vandq_u8(
+           vcgeq_u8(input, vdupq_n_u8(0x80)),
+           vcleq_u8(input, vdupq_n_u8(0xff))
+         );
+-        mask = vorrq_u16(mask, single);
+-        narrow = vshrn_n_u16(mask, 4);
++        mask = vorrq_u8(mask, single);
++        narrow = vshrn_n_u16(vreinterpretq_u16_u8(mask), 4);
+         match_mask = ~vget_lane_u64(vreinterpret_u64_u8(narrow), 0);
+-        match_len = __builtin_ctzll(match_mask) >> 2;
++        if (match_mask == 0) {
++          match_len = 16;
++        } else {
++          match_len = __builtin_ctzll(match_mask) >> 2;
++        }
+         if (match_len != 16) {
+           p += match_len;
+           goto s_n_llhttp__internal__n_header_value_otherwise;
+diff --git a/src/llhttp/llhttp.h b/src/llhttp/llhttp.h
+index 60544596..194fee8c 100644
+--- a/src/llhttp/llhttp.h
++++ b/src/llhttp/llhttp.h
+@@ -4,7 +4,7 @@
+ 
+ #define LLHTTP_VERSION_MAJOR 9
+ #define LLHTTP_VERSION_MINOR 3
+-#define LLHTTP_VERSION_PATCH 0
++#define LLHTTP_VERSION_PATCH 1
+ 
+ #ifndef INCLUDE_LLHTTP_ITSELF_H_
+ #define INCLUDE_LLHTTP_ITSELF_H_
+@@ -58,10 +58,8 @@ enum llhttp_errno {
+   HPE_OK = 0,
+   HPE_INTERNAL = 1,
+   HPE_STRICT = 2,
+-  HPE_CR_EXPECTED = 25,
+   HPE_LF_EXPECTED = 3,
+   HPE_UNEXPECTED_CONTENT_LENGTH = 4,
+-  HPE_UNEXPECTED_SPACE = 30,
+   HPE_CLOSED_CONNECTION = 5,
+   HPE_INVALID_METHOD = 6,
+   HPE_INVALID_URL = 7,
+@@ -82,15 +80,17 @@ enum llhttp_errno {
+   HPE_PAUSED_UPGRADE = 22,
+   HPE_PAUSED_H2_UPGRADE = 23,
+   HPE_USER = 24,
++  HPE_CR_EXPECTED = 25,
+   HPE_CB_URL_COMPLETE = 26,
+   HPE_CB_STATUS_COMPLETE = 27,
+-  HPE_CB_METHOD_COMPLETE = 32,
+-  HPE_CB_VERSION_COMPLETE = 33,
+   HPE_CB_HEADER_FIELD_COMPLETE = 28,
+   HPE_CB_HEADER_VALUE_COMPLETE = 29,
++  HPE_UNEXPECTED_SPACE = 30,
++  HPE_CB_RESET = 31,
++  HPE_CB_METHOD_COMPLETE = 32,
++  HPE_CB_VERSION_COMPLETE = 33,
+   HPE_CB_CHUNK_EXTENSION_NAME_COMPLETE = 34,
+   HPE_CB_CHUNK_EXTENSION_VALUE_COMPLETE = 35,
+-  HPE_CB_RESET = 31,
+   HPE_CB_PROTOCOL_COMPLETE = 38
+ };
+ typedef enum llhttp_errno llhttp_errno_t;
+@@ -294,10 +294,8 @@ typedef enum llhttp_status llhttp_status_t;
+   XX(0, OK, OK) \
+   XX(1, INTERNAL, INTERNAL) \
+   XX(2, STRICT, STRICT) \
+-  XX(25, CR_EXPECTED, CR_EXPECTED) \
+   XX(3, LF_EXPECTED, LF_EXPECTED) \
+   XX(4, UNEXPECTED_CONTENT_LENGTH, UNEXPECTED_CONTENT_LENGTH) \
+-  XX(30, UNEXPECTED_SPACE, UNEXPECTED_SPACE) \
+   XX(5, CLOSED_CONNECTION, CLOSED_CONNECTION) \
+   XX(6, INVALID_METHOD, INVALID_METHOD) \
+   XX(7, INVALID_URL, INVALID_URL) \
+@@ -318,15 +316,17 @@ typedef enum llhttp_status llhttp_status_t;
+   XX(22, PAUSED_UPGRADE, PAUSED_UPGRADE) \
+   XX(23, PAUSED_H2_UPGRADE, PAUSED_H2_UPGRADE) \
+   XX(24, USER, USER) \
++  XX(25, CR_EXPECTED, CR_EXPECTED) \
+   XX(26, CB_URL_COMPLETE, CB_URL_COMPLETE) \
+   XX(27, CB_STATUS_COMPLETE, CB_STATUS_COMPLETE) \
+-  XX(32, CB_METHOD_COMPLETE, CB_METHOD_COMPLETE) \
+-  XX(33, CB_VERSION_COMPLETE, CB_VERSION_COMPLETE) \
+   XX(28, CB_HEADER_FIELD_COMPLETE, CB_HEADER_FIELD_COMPLETE) \
+   XX(29, CB_HEADER_VALUE_COMPLETE, CB_HEADER_VALUE_COMPLETE) \
++  XX(30, UNEXPECTED_SPACE, UNEXPECTED_SPACE) \
++  XX(31, CB_RESET, CB_RESET) \
++  XX(32, CB_METHOD_COMPLETE, CB_METHOD_COMPLETE) \
++  XX(33, CB_VERSION_COMPLETE, CB_VERSION_COMPLETE) \
+   XX(34, CB_CHUNK_EXTENSION_NAME_COMPLETE, CB_CHUNK_EXTENSION_NAME_COMPLETE) \
+   XX(35, CB_CHUNK_EXTENSION_VALUE_COMPLETE, CB_CHUNK_EXTENSION_VALUE_COMPLETE) \
+-  XX(31, CB_RESET, CB_RESET) \
+   XX(38, CB_PROTOCOL_COMPLETE, CB_PROTOCOL_COMPLETE) \
+ 
+ 
+-- 
+GitLab
+
