@@ -1,0 +1,1137 @@
+From 169012d4e8f32c975bea6c45a324e68ef8ecd7e7 Mon Sep 17 00:00:00 2001
+From: Jimmy Qin <sunnyqeen@gmail.com>
+Date: Sat, 12 Sep 2026 12:26:58 +0200
+Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
+
+
+--- a/wstunnel-cli/Cargo.toml
++++ b/wstunnel-cli/Cargo.toml
+@@ -19,6 +19,7 @@ default = ["aws-lc-rs"]
+ jemalloc = ["dep:tikv-jemallocator"]
+ aws-lc-rs = ["wstunnel/aws-lc-rs"]
+ ring = ["wstunnel/ring"]
++rustls = ["wstunnel/rustls"]
+ aws-lc-rs-bindgen = ["wstunnel/aws-lc-rs-bindgen"]
+ 
+ [[bin]]
+--- a/wstunnel/Cargo.toml
++++ b/wstunnel/Cargo.toml
+@@ -40,13 +40,15 @@ httparse = { version = "1.10.1", features = [] }
+ 
+ boring = { version = "4.19.0" }
+ tokio-boring = { version = "4.19.0" }
+-# rustls is kept only for QUIC/WebTransport (web-transport-quinn/quinn) and Hickory DoT/DoH.
+-# TCP tunnel TLS uses BoringSSL via tokio-boring.
+-rustls = { version = "0.23.43", default-features = false, features = ["logging", "std", "tls12"] }
++# rustls is optional and off by default: QUIC/WebTransport and Hickory DoT/DoH.
++# Enable with `--features rustls`. TCP tunnel TLS is always BoringSSL.
++rustls = { version = "0.23.43", default-features = false, features = ["logging", "std", "tls12"], optional = true }
++# OS trust-store importer only (Windows ROOT / Security.framework / OpenSSL CA bundle).
++# Certificates are kept as DER; rustls::RootCertStore is built from them only when the rustls feature is on.
+ rustls-native-certs = { version = "0.8.4", features = [] }
+-# WebTransport (HTTP/3 over QUIC) transport. Takes a rustls config for the QUIC handshake.
++# WebTransport (HTTP/3 over QUIC). Takes a rustls config for the QUIC handshake.
+ # Its default feature is aws-lc-rs, which would pull aws-lc-sys into the ring builds.
+-web-transport-quinn = { version = "0.12.1", default-features = false, features = [] }
++web-transport-quinn = { version = "0.12.1", default-features = false, features = [], optional = true }
+ x509-parser = "0.18.1"
+ serde = { version = "1.0.229", features = ["derive"] }
+ socket2 = { version = "0.6.5", features = ["all"] }
+@@ -88,20 +90,25 @@ get_if_addrs = "0.5.3"
+ [features]
+ default = ["aws-lc-rs"]
+ clap = ["dep:clap"]
++# Opt-in: QUIC/WebTransport and DNS-over-TLS/HTTPS. Off by default.
++# TCP websocket/HTTP2 TLS is always BoringSSL. System CAs are imported regardless.
++rustls = [
++  "dep:rustls",
++  "dep:web-transport-quinn",
++  # Hickory DoT/DoH uses ring so `--features ring,rustls` stays free of aws-lc-sys.
++  "hickory-resolver/tls-ring",
++  "hickory-resolver/https-ring",
++]
+ aws-lc-rs = [
+-  "rustls/aws-lc-rs",
+   "rcgen/aws_lc_rs",
+-  "hickory-resolver/tls-aws-lc-rs",
+-  "hickory-resolver/https-aws-lc-rs",
+   "jsonwebtoken/aws_lc_rs",
+-  "web-transport-quinn/aws-lc-rs",
++  "rustls?/aws-lc-rs",
++  "web-transport-quinn?/aws-lc-rs",
+ ]
+ aws-lc-rs-bindgen = ["dep:aws-lc-rs", "aws-lc-rs/bindgen"]
+ ring = [
+-  "rustls/ring",
+   "rcgen/ring",
+-  "hickory-resolver/tls-ring",
+-  "hickory-resolver/https-ring",
+   "jsonwebtoken/rust_crypto",
+-  "web-transport-quinn/ring",
++  "rustls?/ring",
++  "web-transport-quinn?/ring",
+ ]
+--- a/wstunnel/src/lib.rs
++++ b/wstunnel/src/lib.rs
+@@ -21,6 +21,7 @@ use crate::tunnel::downstream_listeners::{
+     new_stdio_listener,
+ };
+ use crate::tunnel::server::{HttpFallbackHtml, Server, ServerConfig, TlsServerConfig};
++#[cfg(feature = "rustls")]
+ use crate::tunnel::transport::webtransport::WebTransportEndpoint;
+ use crate::tunnel::transport::{TransportAddr, TransportScheme};
+ use crate::tunnel::upstream_connectors::{Socks5UpstreamConnector, TcpUpstreamConnector, UdpUpstreamConnector};
+@@ -91,22 +92,29 @@ pub async fn create_client(
+ 
+     let transport_scheme = TransportScheme::from_str(args.remote_addr.scheme()).expect("invalid scheme in server url");
+     if transport_scheme.is_webtransport() {
+-        // QUIC runs over UDP, so an HTTP CONNECT proxy cannot carry it.
+-        if http_proxy.is_some() {
+-            return Err(anyhow!(
+-                "--http-proxy cannot be used with wts:// (webtransport): QUIC runs over UDP and cannot traverse an HTTP CONNECT proxy. Use wss:// or https:// instead."
+-            ));
++        #[cfg(not(feature = "rustls"))]
++        {
++            return Err(anyhow!(TransportScheme::RUSTLS_REQUIRED_FOR_WEBTRANSPORT));
+         }
+-        // SNI is mandatory to validate the server certificate over QUIC.
+-        if args.tls_sni_disable {
+-            return Err(anyhow!(
+-                "--tls-sni-disable cannot be used with wts:// (webtransport): the QUIC handshake requires a server name. Use wss:// or https:// instead."
+-            ));
+-        }
+-        if args.tls_ech_enable {
+-            return Err(anyhow!(
+-                "--tls-ech-enable cannot be used with wts:// (webtransport): ECH is only wired for the TCP transports. Use wss:// or https:// instead."
+-            ));
++        #[cfg(feature = "rustls")]
++        {
++            // QUIC runs over UDP, so an HTTP CONNECT proxy cannot carry it.
++            if http_proxy.is_some() {
++                return Err(anyhow!(
++                    "--http-proxy cannot be used with wts:// (webtransport): QUIC runs over UDP and cannot traverse an HTTP CONNECT proxy. Use wss:// or https:// instead."
++                ));
++            }
++            // SNI is mandatory to validate the server certificate over QUIC.
++            if args.tls_sni_disable {
++                return Err(anyhow!(
++                    "--tls-sni-disable cannot be used with wts:// (webtransport): the QUIC handshake requires a server name. Use wss:// or https:// instead."
++                ));
++            }
++            if args.tls_ech_enable {
++                return Err(anyhow!(
++                    "--tls-ech-enable cannot be used with wts:// (webtransport): ECH is only wired for the TCP transports. Use wss:// or https:// instead."
++                ));
++            }
+         }
+     }
+ 
+@@ -160,6 +168,7 @@ pub async fn create_client(
+ 
+     // Webtransport rides QUIC, so it gets its own endpoint instead of a stream from the TCP
+     // pool. Built here rather than in `Client::new` so a broken TLS setup fails at startup.
++    #[cfg(feature = "rustls")]
+     let webtransport = if transport_scheme.is_webtransport() {
+         let tls = tls
+             .as_ref()
+@@ -206,6 +215,7 @@ pub async fn create_client(
+         websocket_mask_frame: args.websocket_mask_frame,
+         dns_resolver,
+         http_proxy,
++        #[cfg(feature = "rustls")]
+         webtransport,
+     };
+ 
+@@ -569,7 +579,14 @@ async fn run_server_impl(args: ServerCreationRequest, executor: impl TokioExecut
+         remote_server_idle_timeout: args.remote_to_local_server_idle_timeout,
+         // wts:// on the server means "TLS, and also serve webtransport", so it implies the flag.
+         // The TCP listener still runs, serving websocket and http2 as usual.
+-        enable_webtransport: args.enable_webtransport || is_webtransport,
++        enable_webtransport: {
++            let enable = args.enable_webtransport || is_webtransport;
++            #[cfg(not(feature = "rustls"))]
++            if enable {
++                return Err(anyhow!(TransportScheme::RUSTLS_REQUIRED_FOR_WEBTRANSPORT));
++            }
++            enable
++        },
+         http_fallback_html: args.http_fallback_html.map(HttpFallbackHtml::from_cli_arg),
+     };
+     let server = Server::new(server_config, executor);
+--- a/wstunnel/src/protocols/dns/resolver.rs
++++ b/wstunnel/src/protocols/dns/resolver.rs
+@@ -1,6 +1,8 @@
+ use crate::protocols;
+ use crate::somark::SoMark;
+-use anyhow::{Context, anyhow};
++use anyhow::anyhow;
++#[cfg(feature = "rustls")]
++use anyhow::Context;
+ use futures_util::{FutureExt, TryFutureExt};
+ use hickory_resolver::Resolver;
+ use hickory_resolver::config::{ConnectionConfig, LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts};
+@@ -15,11 +17,13 @@ use std::time::Duration;
+ use tokio::net::{TcpStream, UdpSocket};
+ use url::{Host, Url};
+ 
+-#[cfg(feature = "aws-lc-rs")]
++#[cfg(all(feature = "rustls", feature = "aws-lc-rs"))]
+ use hickory_resolver::net::NetError;
++#[cfg(feature = "rustls")]
+ use rustls;
++#[cfg(feature = "rustls")]
+ use rustls::ClientConfig;
+-#[cfg(feature = "aws-lc-rs")]
++#[cfg(all(feature = "rustls", feature = "aws-lc-rs"))]
+ use rustls::client::EchConfig;
+ 
+ // Interleave v4 and v6 addresses as per RFC8305.
+@@ -70,7 +74,7 @@ impl DnsResolver {
+         Ok(addrs)
+     }
+ 
+-    #[cfg(feature = "aws-lc-rs")]
++    #[cfg(all(feature = "rustls", feature = "aws-lc-rs"))]
+     pub async fn lookup_ech_config(&self, domain: &Host) -> Result<Option<EchConfig>, NetError> {
+         use hickory_resolver::proto::rr::rdata::svcb::{SvcParamKey, SvcParamValue};
+         use hickory_resolver::proto::rr::{RData, RecordType};
+@@ -139,11 +143,13 @@ impl DnsResolver {
+             }
+ 
+             let builder = Resolver::builder_with_config(cfg, TokioRuntimeProviderWithSoMark::new(proxy, so_mark))
+-                .with_options(opts)
+-                .with_tls_config(tls_client_config()?);
++                .with_options(opts);
++            #[cfg(feature = "rustls")]
++            let builder = builder.with_tls_config(tls_client_config()?);
+             Ok(builder.build()?)
+         }
+ 
++        #[cfg(feature = "rustls")]
+         fn get_sni(resolver: &Url) -> anyhow::Result<String> {
+             Ok(resolver
+                 .query_pairs()
+@@ -157,15 +163,33 @@ impl DnsResolver {
+             let (mut conn_config, port) = match resolver.scheme() {
+                 "dns" => (ConnectionConfig::udp(), resolver.port().unwrap_or(53)),
+                 "dns+https" => {
+-                    let sni = get_sni(resolver)?;
+-                    (
+-                        ConnectionConfig::https(Arc::from(sni.as_str()), None),
+-                        resolver.port().unwrap_or(443),
+-                    )
++                    #[cfg(not(feature = "rustls"))]
++                    {
++                        return Err(anyhow!(
++                            "dns+https requires the `rustls` crate feature. Rebuild with `--features rustls`."
++                        ));
++                    }
++                    #[cfg(feature = "rustls")]
++                    {
++                        let sni = get_sni(resolver)?;
++                        (
++                            ConnectionConfig::https(Arc::from(sni.as_str()), None),
++                            resolver.port().unwrap_or(443),
++                        )
++                    }
+                 }
+                 "dns+tls" => {
+-                    let sni = get_sni(resolver)?;
+-                    (ConnectionConfig::tls(Arc::from(sni.as_str())), resolver.port().unwrap_or(853))
++                    #[cfg(not(feature = "rustls"))]
++                    {
++                        return Err(anyhow!(
++                            "dns+tls requires the `rustls` crate feature. Rebuild with `--features rustls`."
++                        ));
++                    }
++                    #[cfg(feature = "rustls")]
++                    {
++                        let sni = get_sni(resolver)?;
++                        (ConnectionConfig::tls(Arc::from(sni.as_str())), resolver.port().unwrap_or(853))
++                    }
+                 }
+                 _ => return Err(anyhow!("invalid protocol for dns resolver")),
+             };
+@@ -232,11 +256,12 @@ impl DnsResolver {
+     }
+ }
+ 
++#[cfg(feature = "rustls")]
+ fn tls_client_config() -> Result<ClientConfig, rustls::Error> {
+     // Load system certificates
+     let root_store = crate::tunnel::ca_reloader::get_root_store();
+ 
+-    if root_store.is_empty() {
++    if crate::tunnel::ca_reloader::system_ca_is_empty() {
+         warn!(
+             "DNS resolver has loaded no system certificates. If you use Dns Over HTTPS, or tls-over-https, it is most likely going to fail. Please install system certificates to avoid this warning."
+         );
+--- a/wstunnel/src/protocols/tls/mod.rs
++++ b/wstunnel/src/protocols/tls/mod.rs
+@@ -8,11 +8,15 @@ pub use server::TlsConnector;
+ pub use server::connect;
+ pub use server::load_certificates_from_pem;
+ pub use server::load_private_key_from_file;
++#[cfg(feature = "rustls")]
+ pub use server::quic_client_config;
++#[cfg(feature = "rustls")]
+ pub use server::quic_server_config;
+ pub use server::tls_acceptor;
+ pub use server::tls_connector;
++#[cfg(feature = "rustls")]
+ pub use utils::cn_from_certificate;
+ pub use utils::cn_from_x509;
++#[cfg(feature = "rustls")]
+ pub use utils::find_leaf_certificate;
+ pub use utils::find_leaf_cn_from_x509;
+--- a/wstunnel/src/protocols/tls/server.rs
++++ b/wstunnel/src/protocols/tls/server.rs
+@@ -6,14 +6,20 @@ use boring::ssl::{
+ use boring::x509::X509;
+ use boring::x509::store::X509StoreBuilder;
+ use log::warn;
++#[cfg(feature = "rustls")]
+ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
++#[cfg(feature = "rustls")]
+ use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
++#[cfg(feature = "rustls")]
+ use rustls::server::WebPkiClientVerifier;
++#[cfg(feature = "rustls")]
+ use rustls::server::danger::ClientCertVerifier;
++#[cfg(feature = "rustls")]
+ use rustls::{DigitallySignedStruct, Error, KeyLogFile, RootCertStore, SignatureScheme};
+ use std::fs;
+ use std::io::Write;
+ use std::path::Path;
++#[cfg(feature = "rustls")]
+ use std::sync::Arc;
+ use tokio::net::TcpStream;
+ use tokio_boring::SslStream;
+@@ -47,6 +53,30 @@ fn select_alpn_from_client<'a>(offered: &[Vec<u8>], client: &'a [u8]) -> Result<
+ }
+ 
+ /// Encode ALPN protocols in the length-prefixed wire format BoringSSL expects.
++fn system_ca_verify_store() -> anyhow::Result<Option<boring::x509::store::X509Store>> {
++    let ders = crate::tunnel::ca_reloader::get_system_ca_ders();
++    if ders.is_empty() {
++        return Ok(None);
++    }
++
++    let mut store = X509StoreBuilder::new()?;
++    let mut added = 0usize;
++    for der in ders.iter() {
++        match X509::from_der(der) {
++            Ok(cert) => {
++                if store.add_cert(cert).is_ok() {
++                    added += 1;
++                }
++            }
++            Err(err) => warn!("cannot parse a system CA certificate: {err}"),
++        }
++    }
++    if added == 0 {
++        return Ok(None);
++    }
++    Ok(Some(store.build()))
++}
++
+ fn encode_alpn(protocols: &[Vec<u8>]) -> Vec<u8> {
+     let mut out = Vec::new();
+     for proto in protocols {
+@@ -134,8 +164,21 @@ pub fn tls_connector(
+ 
+     if tls_verify_certificate {
+         builder.set_verify(SslVerifyMode::PEER);
+-        if let Err(err) = builder.set_default_verify_paths() {
+-            warn!("Cannot load default TLS CA paths: {err}");
++        match system_ca_verify_store() {
++            Ok(Some(store)) => builder
++                .set_verify_cert_store(store)
++                .with_context(|| "Cannot install system CA store on TLS connector")?,
++            Ok(None) => {
++                if let Err(err) = builder.set_default_verify_paths() {
++                    warn!("Cannot load default TLS CA paths: {err}");
++                }
++            }
++            Err(err) => {
++                warn!("Cannot build system CA store, falling back to default TLS CA paths: {err}");
++                if let Err(err) = builder.set_default_verify_paths() {
++                    warn!("Cannot load default TLS CA paths: {err}");
++                }
++            }
+         }
+     } else {
+         builder.set_verify(SslVerifyMode::NONE);
+@@ -182,6 +225,7 @@ pub fn tls_acceptor(tls_cfg: &TlsServerConfig, alpn_protocols: Option<Vec<Vec<u8
+     Ok(builder.build())
+ }
+ 
++#[cfg(feature = "rustls")]
+ fn rustls_certs_from_x509(certs: &[X509]) -> anyhow::Result<Vec<CertificateDer<'static>>> {
+     certs
+         .iter()
+@@ -193,6 +237,7 @@ fn rustls_certs_from_x509(certs: &[X509]) -> anyhow::Result<Vec<CertificateDer<'
+         .collect()
+ }
+ 
++#[cfg(feature = "rustls")]
+ fn rustls_key_from_pkey(key: &PKey<Private>) -> anyhow::Result<PrivateKeyDer<'static>> {
+     use rustls::pki_types::pem::PemObject;
+ 
+@@ -206,6 +251,7 @@ fn rustls_key_from_pkey(key: &PKey<Private>) -> anyhow::Result<PrivateKeyDer<'st
+ ///
+ /// QUIC still uses rustls (via quinn). Certificate material is converted from the BoringSSL
+ /// objects used on the TCP path.
++#[cfg(feature = "rustls")]
+ pub fn quic_server_config(tls_cfg: &TlsServerConfig) -> anyhow::Result<rustls::ServerConfig> {
+     let crypto_provider = rustls::crypto::CryptoProvider::get_default()
+         .ok_or_else(|| anyhow!("No default crypto provider installed for rustls"))?
+@@ -226,6 +272,7 @@ pub fn quic_server_config(tls_cfg: &TlsServerConfig) -> anyhow::Result<rustls::S
+     Ok(config)
+ }
+ 
++#[cfg(feature = "rustls")]
+ fn quic_client_cert_verifier(tls_cfg: &TlsServerConfig) -> anyhow::Result<Arc<dyn ClientCertVerifier>> {
+     let Some(tls_client_ca_certificates) = &tls_cfg.tls_client_ca_certificates else {
+         return Ok(WebPkiClientVerifier::no_client_auth());
+@@ -247,6 +294,7 @@ fn quic_client_cert_verifier(tls_cfg: &TlsServerConfig) -> anyhow::Result<Arc<dy
+ ///
+ /// ECH is not plumbed here: it is only wired for the TCP transports, and BoringSSL does not
+ /// expose the rustls ECH API.
++#[cfg(feature = "rustls")]
+ pub fn quic_client_config(
+     tls_verify_certificate: bool,
+     tls_client_certificate: Option<Vec<X509>>,
+@@ -277,9 +325,11 @@ pub fn quic_client_config(
+     Ok(config)
+ }
+ 
++#[cfg(feature = "rustls")]
+ #[derive(Debug)]
+ struct NullVerifier;
+ 
++#[cfg(feature = "rustls")]
+ impl ServerCertVerifier for NullVerifier {
+     fn verify_server_cert(
+         &self,
+--- a/wstunnel/src/protocols/tls/utils.rs
++++ b/wstunnel/src/protocols/tls/utils.rs
+@@ -1,10 +1,12 @@
+ use boring::x509::X509;
++#[cfg(feature = "rustls")]
+ use rustls::pki_types::CertificateDer;
+ use x509_parser::parse_x509_certificate;
+ use x509_parser::prelude::X509Certificate;
+ 
+ /// Find a leaf certificate in a vector of rustls DER certificates. It is assumed only a single
+ /// leaf certificate is present. The other certificates should be (intermediate) CA certificates.
++#[cfg(feature = "rustls")]
+ pub fn find_leaf_certificate<'a>(tls_certificates: &'a [CertificateDer<'static>]) -> Option<X509Certificate<'a>> {
+     for tls_certificate in tls_certificates {
+         if let Ok((_, tls_certificate_x509)) = parse_x509_certificate(tls_certificate)
+--- a/wstunnel/src/test_integrations.rs
++++ b/wstunnel/src/test_integrations.rs
+@@ -58,11 +58,10 @@ fn free_addr() -> (SocketAddr, Host) {
+ 
+ #[fixture]
+ fn dns_resolver() -> DnsResolver {
+-    // Whichever provider the crate was built with, as only one of the two is compiled in.
+-    // Installing twice is expected across fixtures, hence the ignored result.
+-    #[cfg(feature = "aws-lc-rs")]
++    // Whichever provider the crate was built with. Installing twice is expected across fixtures.
++    #[cfg(all(feature = "rustls", feature = "aws-lc-rs"))]
+     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+-    #[cfg(all(feature = "ring", not(feature = "aws-lc-rs")))]
++    #[cfg(all(feature = "rustls", not(feature = "aws-lc-rs")))]
+     let _ = rustls::crypto::ring::default_provider().install_default();
+ 
+     DnsResolver::new_from_urls(&[], None, SoMark::new(None), true).expect("Cannot create DNS resolver")
+@@ -88,6 +87,7 @@ fn server_no_tls(dns_resolver: DnsResolver) -> Server {
+ }
+ 
+ /// Server serving webtransport over UDP, alongside websocket/http2 over TCP.
++#[cfg(feature = "rustls")]
+ #[fixture]
+ fn server_webtransport(dns_resolver: DnsResolver) -> Server {
+     let server_config = ServerConfig {
+@@ -115,6 +115,7 @@ fn server_webtransport(dns_resolver: DnsResolver) -> Server {
+ }
+ 
+ /// Not a fixture, as the port to dial is only known once the server fixture has picked one.
++#[cfg(feature = "rustls")]
+ async fn client_webtransport(server_port: u16, dns_resolver: DnsResolver) -> Client {
+     // The embedded certificate is self-signed with no SAN, so verification must be off.
+     let tls_connector =
+@@ -179,6 +180,7 @@ async fn client_ws(server_port: u16, dns_resolver: DnsResolver) -> Client {
+         websocket_mask_frame: false,
+         dns_resolver,
+         http_proxy: None,
++        #[cfg(feature = "rustls")]
+         webtransport: None,
+     };
+ 
+@@ -318,6 +320,7 @@ async fn test_udp_tunnel(server_no_tls: Server, no_restrictions: RestrictionsRul
+     assert_eq!(&buf[..6], b"world!");
+ }
+ 
++#[cfg(feature = "rustls")]
+ #[rstest]
+ #[timeout(Duration::from_secs(15))]
+ #[tokio::test]
+@@ -387,6 +390,7 @@ async fn read_one_datagram(
+     }
+ }
+ 
++#[cfg(feature = "rustls")]
+ #[rstest]
+ #[timeout(Duration::from_secs(15))]
+ #[tokio::test]
+--- a/wstunnel/src/tunnel/ca_reloader.rs
++++ b/wstunnel/src/tunnel/ca_reloader.rs
+@@ -1,17 +1,35 @@
+ use arc_swap::ArcSwap;
+-use rustls::RootCertStore;
+ use std::sync::{Arc, LazyLock};
+ use std::time::Duration;
+ use tracing::{debug, warn};
+ 
+-// Global thread-safe store for system CA certificates
+-static SYSTEM_ROOT_STORE: LazyLock<ArcSwap<RootCertStore>> = LazyLock::new(|| {
+-    SystemCaReloader::init_crypto_provider();
+-    ArcSwap::from_pointee(SystemCaReloader::load_system_ca_certs())
+-});
++#[cfg(feature = "rustls")]
++use rustls::RootCertStore;
++#[cfg(feature = "rustls")]
++use rustls::pki_types::CertificateDer;
++
++/// System trust-anchor DERs from the OS store (Windows ROOT, Security.framework, OpenSSL CA bundle).
++/// This is not a rustls `RootCertStore`; rustls and BoringSSL each convert from these bytes.
++static SYSTEM_CA_DERS: LazyLock<ArcSwap<Vec<Vec<u8>>>> =
++    LazyLock::new(|| ArcSwap::from_pointee(load_system_ca_ders()));
+ 
+-/// Get the global system root store
++#[cfg(feature = "rustls")]
++static SYSTEM_ROOT_STORE: LazyLock<ArcSwap<RootCertStore>> =
++    LazyLock::new(|| ArcSwap::from_pointee(rustls_store_from_ders(SYSTEM_CA_DERS.load().as_slice())));
++
++/// System CA certificates as DER. Used by BoringSSL (TCP TLS) and converted for rustls when needed.
++pub fn get_system_ca_ders() -> Arc<Vec<Vec<u8>>> {
++    SYSTEM_CA_DERS.load().clone()
++}
++
++pub fn system_ca_is_empty() -> bool {
++    SYSTEM_CA_DERS.load().is_empty()
++}
++
++/// rustls view of the same system CAs. Only for QUIC/WebTransport and DoT/DoH.
++#[cfg(feature = "rustls")]
+ pub fn get_root_store() -> Arc<RootCertStore> {
++    init_crypto_provider();
+     SYSTEM_ROOT_STORE.load().clone()
+ }
+ 
+@@ -21,6 +39,8 @@ impl SystemCaReloader {
+     /// Spawn a background task to periodically reload system CA certificates
+     pub fn start(interval: Option<Duration>) -> tokio::task::JoinHandle<()> {
+         let interval = interval.unwrap_or(Duration::from_secs(3600));
++        let _ = get_system_ca_ders();
++        #[cfg(feature = "rustls")]
+         let _ = get_root_store();
+ 
+         tokio::spawn(async move {
+@@ -30,41 +50,47 @@ impl SystemCaReloader {
+ 
+             loop {
+                 ticker.tick().await;
+-                let new_store = Self::load_system_ca_certs();
+-                SYSTEM_ROOT_STORE.store(Arc::new(new_store));
++                let ders = load_system_ca_ders();
++                SYSTEM_CA_DERS.store(Arc::new(ders.clone()));
++                #[cfg(feature = "rustls")]
++                SYSTEM_ROOT_STORE.store(Arc::new(rustls_store_from_ders(&ders)));
+                 debug!("System CA certificates reloaded successfully");
+             }
+         })
+     }
++}
+ 
+-    /// Safely initializes the process-wide default CryptoProvider exactly once
+-    fn init_crypto_provider() {
+-        #[cfg(feature = "aws-lc-rs")]
+-        {
+-            if rustls::crypto::aws_lc_rs::default_provider().install_default().is_err() {
+-                #[cfg(feature = "ring")]
+-                let _ = rustls::crypto::ring::default_provider().install_default();
+-            }
+-        }
+-        #[cfg(all(not(feature = "aws-lc-rs"), feature = "ring"))]
+-        {
+-            let _ = rustls::crypto::ring::default_provider().install_default();
++fn load_system_ca_ders() -> Vec<Vec<u8>> {
++    let loaded = rustls_native_certs::load_native_certs();
++    loaded.errors.iter().for_each(|err| {
++        warn!("cannot load some system certificates: {err}");
++    });
++    loaded.certs.into_iter().map(|cert| cert.as_ref().to_vec()).collect()
++}
++
++#[cfg(feature = "rustls")]
++fn rustls_store_from_ders(ders: &[Vec<u8>]) -> RootCertStore {
++    let mut root_store = RootCertStore::empty();
++    for der in ders {
++        if let Err(err) = root_store.add(CertificateDer::from(der.clone())) {
++            warn!("cannot load a system certificate: {err:?}");
+         }
+     }
++    root_store
++}
+ 
+-    /// Helper function to load system certificates into a RootCertStore
+-    fn load_system_ca_certs() -> RootCertStore {
+-        let mut root_store = RootCertStore::empty();
+-        let certs = rustls_native_certs::load_native_certs();
+-        certs.errors.iter().for_each(|err| {
+-            warn!("cannot load system some system certificates: {err}");
+-        });
+-        for cert in certs.certs {
+-            if let Err(err) = root_store.add(cert) {
+-                warn!("cannot load a system certificate: {err:?}");
+-                continue;
+-            }
++/// Safely initializes the process-wide default CryptoProvider exactly once
++#[cfg(feature = "rustls")]
++fn init_crypto_provider() {
++    #[cfg(feature = "aws-lc-rs")]
++    {
++        if rustls::crypto::aws_lc_rs::default_provider().install_default().is_err() {
++            // `rustls` always enables hickory `tls-ring`, so the ring provider is present.
++            let _ = rustls::crypto::ring::default_provider().install_default();
+         }
+-        root_store
++    }
++    #[cfg(not(feature = "aws-lc-rs"))]
++    {
++        let _ = rustls::crypto::ring::default_provider().install_default();
+     }
+ }
+--- a/wstunnel/src/tunnel/client/client.rs
++++ b/wstunnel/src/tunnel/client/client.rs
+@@ -7,7 +7,9 @@ use crate::tunnel::tls_reloader::TlsReloader;
+ use crate::tunnel::transport::io::{TransportReader, TransportWriter};
+ use crate::tunnel::transport::{TransportScheme, jwt_token_to_tunnel};
+ use crate::tunnel::upstream_connectors::UpstreamConnector;
+-use crate::tunnel::{LocalProtocol, RemoteAddr};
++#[cfg(feature = "rustls")]
++use crate::tunnel::LocalProtocol;
++use crate::tunnel::RemoteAddr;
+ use anyhow::Context;
+ use futures_util::pin_mut;
+ use hyper::header::COOKIE;
+@@ -84,23 +86,35 @@ impl<E: TokioExecutorRef> Client<E> {
+                     .await
+                     .map(|(r, w, response)| (TransportReader::Http2(r), TransportWriter::Http2(w), response))
+             }
+-            TransportScheme::Wts => tunnel::transport::webtransport::connect(request_id, self, remote_cfg)
+-                .await
+-                .map(|(r, w, response)| {
+-                    if matches!(remote_cfg.protocol, LocalProtocol::Udp { .. } | LocalProtocol::TProxyUdp { .. }) {
+-                        (
+-                            TransportReader::WebTransportUdp(Box::new(r.into_udp_stream())),
+-                            TransportWriter::WebTransportUdp(Box::new(w.into_udp_stream())),
+-                            response,
+-                        )
+-                    } else {
+-                        (
+-                            TransportReader::WebTransport(Box::new(r)),
+-                            TransportWriter::WebTransport(Box::new(w)),
+-                            response,
+-                        )
+-                    }
+-                }),
++            TransportScheme::Wts => {
++                #[cfg(feature = "rustls")]
++                {
++                    tunnel::transport::webtransport::connect(request_id, self, remote_cfg)
++                        .await
++                        .map(|(r, w, response)| {
++                            if matches!(
++                                remote_cfg.protocol,
++                                LocalProtocol::Udp { .. } | LocalProtocol::TProxyUdp { .. }
++                            ) {
++                                (
++                                    TransportReader::WebTransportUdp(Box::new(r.into_udp_stream())),
++                                    TransportWriter::WebTransportUdp(Box::new(w.into_udp_stream())),
++                                    response,
++                                )
++                            } else {
++                                (
++                                    TransportReader::WebTransport(Box::new(r)),
++                                    TransportWriter::WebTransport(Box::new(w)),
++                                    response,
++                                )
++                            }
++                        })
++                }
++                #[cfg(not(feature = "rustls"))]
++                {
++                    Err(anyhow::anyhow!(TransportScheme::RUSTLS_REQUIRED_FOR_WEBTRANSPORT))
++                }
++            }
+         };
+ 
+         let (local_rx, mut local_tx) = duplex_stream;
+@@ -229,6 +243,11 @@ impl<E: TokioExecutorRef> Client<E> {
+                     }
+                 }
+                 TransportScheme::Wts => {
++                    #[cfg(not(feature = "rustls"))]
++                    {
++                        return Err(anyhow::anyhow!(TransportScheme::RUSTLS_REQUIRED_FOR_WEBTRANSPORT));
++                    }
++                    #[cfg(feature = "rustls")]
+                     match tunnel::transport::webtransport::connect(request_id, &client, &remote_addr)
+                         .instrument(span.clone())
+                         .await
+--- a/wstunnel/src/tunnel/client/config.rs
++++ b/wstunnel/src/tunnel/client/config.rs
+@@ -2,6 +2,7 @@ use crate::protocols::dns::DnsResolver;
+ use crate::protocols::tls::TlsConnector;
+ use crate::somark::SoMark;
+ use crate::tunnel::transport::TransportAddr;
++#[cfg(feature = "rustls")]
+ use crate::tunnel::transport::webtransport::WebTransportEndpoint;
+ use hyper::header::{HeaderName, HeaderValue};
+ use parking_lot::RwLock;
+@@ -28,10 +29,12 @@ pub struct ClientConfig {
+     /// QUIC endpoint, only for the webtransport transport. `None` for every other scheme.
+     /// Built in `create_client`, so a bad TLS setup fails at startup rather than on the
+     /// first tunnel.
++    #[cfg(feature = "rustls")]
+     pub webtransport: Option<Arc<WebTransportEndpoint>>,
+ }
+ 
+ impl ClientConfig {
++    #[cfg(feature = "rustls")]
+     pub fn quic_server_name(&self) -> String {
+         self.remote_addr
+             .tls()
+--- a/wstunnel/src/tunnel/client/connection_pool/manager.rs
++++ b/wstunnel/src/tunnel/client/connection_pool/manager.rs
+@@ -2,18 +2,42 @@ use crate::protocols;
+ use crate::protocols::tls;
+ use crate::tunnel::client::ClientConfig;
+ use crate::tunnel::client::connection_pool::l4_stream::L4Stream;
+-use crate::tunnel::transport;
+-use anyhow::{Context, anyhow};
++use anyhow::anyhow;
++#[cfg(feature = "rustls")]
++use anyhow::Context;
+ use bb8::ManageConnection;
+ use bytes::Bytes;
+-use either::Either;
+-use std::net::SocketAddr;
+ use std::ops::Deref;
+ use std::sync::Arc;
+ use tracing::{instrument, warn};
++
++#[cfg(feature = "rustls")]
++use crate::tunnel::transport;
++#[cfg(feature = "rustls")]
++use either::Either;
++#[cfg(feature = "rustls")]
++use std::net::SocketAddr;
++#[cfg(feature = "rustls")]
+ use url::Host;
++#[cfg(feature = "rustls")]
+ use web_transport_quinn::Session;
+ 
++#[cfg(feature = "rustls")]
++pub type PooledCnx = Option<Either<L4Stream, Session>>;
++#[cfg(not(feature = "rustls"))]
++pub type PooledCnx = Option<L4Stream>;
++
++pub fn take_l4_stream(conn: &mut PooledCnx) -> Option<L4Stream> {
++    #[cfg(feature = "rustls")]
++    {
++        conn.take().and_then(Either::left)
++    }
++    #[cfg(not(feature = "rustls"))]
++    {
++        conn.take()
++    }
++}
++
+ #[derive(Clone)]
+ pub struct L4StreamManager(Arc<ClientConfig>);
+ 
+@@ -31,6 +55,7 @@ impl Deref for L4StreamManager {
+     }
+ }
+ 
++#[cfg(feature = "rustls")]
+ impl L4StreamManager {
+     /// Establish a webtransport session with the server, trying each resolved address in turn.
+     ///
+@@ -107,14 +132,21 @@ impl L4StreamManager {
+ }
+ 
+ impl ManageConnection for L4StreamManager {
+-    type Connection = Option<Either<L4Stream, Session>>;
++    type Connection = PooledCnx;
+     type Error = anyhow::Error;
+ 
+     #[instrument(level = "trace", name = "cnx_server", skip_all)]
+     async fn connect(&self) -> Result<Self::Connection, Self::Error> {
+         // wts:// rides QUIC over UDP, so it never borrows a TCP stream.
+         if self.remote_addr.scheme().is_webtransport() {
+-            return Ok(Some(Either::Right(self.connect_webtransport().await?)));
++            #[cfg(feature = "rustls")]
++            {
++                return Ok(Some(Either::Right(self.connect_webtransport().await?)));
++            }
++            #[cfg(not(feature = "rustls"))]
++            {
++                return Err(anyhow!(crate::tunnel::transport::TransportScheme::RUSTLS_REQUIRED_FOR_WEBTRANSPORT));
++            }
+         }
+ 
+         let timeout = self.timeout_connect;
+@@ -150,20 +182,42 @@ impl ManageConnection for L4StreamManager {
+                     return Err(anyhow!("Timed out doing the TLS handshake with the server"));
+                 }
+             };
+-            Ok(Some(Either::Left(L4Stream::from_client_tls(tls_stream, Bytes::default()))))
++            #[cfg(feature = "rustls")]
++            {
++                Ok(Some(Either::Left(L4Stream::from_client_tls(tls_stream, Bytes::default()))))
++            }
++            #[cfg(not(feature = "rustls"))]
++            {
++                Ok(Some(L4Stream::from_client_tls(tls_stream, Bytes::default())))
++            }
+         } else {
+-            Ok(Some(Either::Left(L4Stream::from_tcp(tcp_stream, Bytes::default()))))
++            #[cfg(feature = "rustls")]
++            {
++                Ok(Some(Either::Left(L4Stream::from_tcp(tcp_stream, Bytes::default()))))
++            }
++            #[cfg(not(feature = "rustls"))]
++            {
++                Ok(Some(L4Stream::from_tcp(tcp_stream, Bytes::default())))
++            }
+         }
+     }
+ 
+     async fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
+-        match conn
+-            .as_ref()
+-            .and_then(|c| c.as_ref().right())
+-            .and_then(Session::close_reason)
++        #[cfg(feature = "rustls")]
+         {
+-            Some(err) => Err(anyhow!("pooled webtransport session is closed: {err}")),
+-            None => Ok(()),
++            match conn
++                .as_ref()
++                .and_then(|c| c.as_ref().right())
++                .and_then(Session::close_reason)
++            {
++                Some(err) => Err(anyhow!("pooled webtransport session is closed: {err}")),
++                None => Ok(()),
++            }
++        }
++        #[cfg(not(feature = "rustls"))]
++        {
++            let _ = conn;
++            Ok(())
+         }
+     }
+ 
+@@ -171,10 +225,17 @@ impl ManageConnection for L4StreamManager {
+         // Unlike a TCP stream, which is taken out of the slot by whoever borrowed it, a
+         // webtransport session stays in the pool and can be closed by the peer or time out while
+         // idle. The handle still looks usable, so ask it.
+-        match conn.as_ref() {
+-            None => true,
+-            Some(Either::Left(_)) => false,
+-            Some(Either::Right(session)) => session.close_reason().is_some(),
++        #[cfg(feature = "rustls")]
++        {
++            match conn.as_ref() {
++                None => true,
++                Some(Either::Left(_)) => false,
++                Some(Either::Right(session)) => session.close_reason().is_some(),
++            }
++        }
++        #[cfg(not(feature = "rustls"))]
++        {
++            conn.is_none()
+         }
+     }
+ }
+--- a/wstunnel/src/tunnel/client/connection_pool/mod.rs
++++ b/wstunnel/src/tunnel/client/connection_pool/mod.rs
+@@ -3,3 +3,4 @@ mod manager;
+ 
+ pub use l4_stream::{L4ReadHalf, L4Stream, L4WriteHalf};
+ pub use manager::L4StreamManager;
++pub use manager::take_l4_stream;
+--- a/wstunnel/src/tunnel/server/mod.rs
++++ b/wstunnel/src/tunnel/server/mod.rs
+@@ -1,6 +1,7 @@
+ #![allow(clippy::module_inception)]
+ mod handler_http2;
+ mod handler_websocket;
++#[cfg(feature = "rustls")]
+ mod handler_webtransport;
+ mod reverse_tunnel;
+ mod server;
+--- a/wstunnel/src/tunnel/server/server.rs
++++ b/wstunnel/src/tunnel/server/server.rs
+@@ -10,6 +10,7 @@ use crate::tunnel::downstream_listeners::{
+ };
+ use crate::tunnel::server::handler_http2::http_server_upgrade;
+ use crate::tunnel::server::handler_websocket::ws_server_upgrade;
++#[cfg(feature = "rustls")]
+ use crate::tunnel::server::handler_webtransport;
+ use crate::tunnel::server::reverse_tunnel::ReverseTunnelServer;
+ use crate::tunnel::server::utils::{
+@@ -501,19 +502,26 @@ impl<E: crate::TokioExecutorRef> Server<E> {
+         // WebTransport needs its own UDP socket, so it runs as a sibling of the TCP accept loop
+         // below. One server process then answers websocket, http2 and webtransport clients.
+         if self.config.enable_webtransport {
+-            if self.config.tls.is_none() {
+-                return Err(anyhow!(
+-                    "--enable-webtransport requires TLS: QUIC mandates TLS 1.3, so it cannot be served on a cleartext ws:// or http:// endpoint. Use wss:// or wts://."
+-                ));
++            #[cfg(not(feature = "rustls"))]
++            {
++                return Err(anyhow!(crate::tunnel::transport::TransportScheme::RUSTLS_REQUIRED_FOR_WEBTRANSPORT));
+             }
+-
+-            let server = self.clone();
+-            let restrictions = restrictions.restrictions_rules().clone();
+-            self.executor.spawn(async move {
+-                if let Err(err) = handler_webtransport::run_webtransport_server(server, restrictions).await {
+-                    error!("Webtransport server stopped: {err:?}");
++            #[cfg(feature = "rustls")]
++            {
++                if self.config.tls.is_none() {
++                    return Err(anyhow!(
++                        "--enable-webtransport requires TLS: QUIC mandates TLS 1.3, so it cannot be served on a cleartext ws:// or http:// endpoint. Use wss:// or wts://."
++                    ));
+                 }
+-            });
++
++                let server = self.clone();
++                let restrictions = restrictions.restrictions_rules().clone();
++                self.executor.spawn(async move {
++                    if let Err(err) = handler_webtransport::run_webtransport_server(server, restrictions).await {
++                        error!("Webtransport server stopped: {err:?}");
++                    }
++                });
++            }
+         }
+ 
+         loop {
+--- a/wstunnel/src/tunnel/server/utils.rs
++++ b/wstunnel/src/tunnel/server/utils.rs
+@@ -213,6 +213,7 @@ pub(super) fn validate_tunnel<'a>(
+ /// talk to us at all", without knowing where it wants to go. Webtransport checks it when accepting
+ /// a session, since one session is shared by every tunnel the client opens on it and the
+ /// destination only arrives per stream. Streams are still validated in full afterwards.
++#[cfg_attr(not(feature = "rustls"), allow(dead_code))]
+ pub(super) fn matches_any_restriction(
+     path_prefix: &str,
+     authorization: Option<&str>,
+--- a/wstunnel/src/tunnel/transport/http2.rs
++++ b/wstunnel/src/tunnel/transport/http2.rs
+@@ -1,11 +1,11 @@
+ use super::io::{MAX_PACKET_LENGTH, TransportRead, TransportWrite};
+ use crate::tunnel::RemoteAddr;
+ use crate::tunnel::client::Client;
++use crate::tunnel::client::connection_pool::take_l4_stream;
+ use crate::tunnel::transport::jwt::tunnel_to_jwt_token;
+ use crate::tunnel::transport::{TransportScheme, headers_from_file};
+ use anyhow::{Context, anyhow};
+ use bytes::{Bytes, BytesMut};
+-use either::Either;
+ use http_body_util::{BodyExt, BodyStream, StreamBody};
+ use hyper::Request;
+ use hyper::body::{Frame, Incoming};
+@@ -202,10 +202,8 @@ pub async fn connect(
+         )
+     })?;
+     debug!("with HTTP upgrade request {req:?}");
+-    let transport = pooled_cnx
+-        .take()
+-        .and_then(Either::left)
+-        .ok_or_else(|| anyhow!("the connection pool did not return a TCP stream"))?;
++    let transport =
++        take_l4_stream(&mut pooled_cnx).ok_or_else(|| anyhow!("the connection pool did not return a TCP stream"))?;
+     let (mut request_sender, cnx) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+         .timer(TokioTimer::new())
+         .adaptive_window(true)
+--- a/wstunnel/src/tunnel/transport/io.rs
++++ b/wstunnel/src/tunnel/transport/io.rs
+@@ -1,5 +1,6 @@
+ use crate::tunnel::transport::http2::{Http2TransportRead, Http2TransportWrite};
+ use crate::tunnel::transport::websocket::{WebsocketTransportRead, WebsocketTransportWrite};
++#[cfg(feature = "rustls")]
+ use crate::tunnel::transport::webtransport::{
+     WebTransportRead, WebTransportUdpRead, WebTransportUdpWrite, WebTransportWrite,
+ };
+@@ -40,7 +41,9 @@ pub enum TransportReader {
+     Http2(Http2TransportRead),
+     // Boxed: a quinn RecvStream plus the session handle is several times the size of the other
+     // variants, and would otherwise inflate the enum for every tunnel.
++    #[cfg(feature = "rustls")]
+     WebTransport(Box<WebTransportRead>),
++    #[cfg(feature = "rustls")]
+     WebTransportUdp(Box<WebTransportUdpRead>),
+ }
+ 
+@@ -49,7 +52,9 @@ impl TransportRead for TransportReader {
+         match self {
+             Self::Websocket(s) => s.copy(writer).await,
+             Self::Http2(s) => s.copy(writer).await,
++            #[cfg(feature = "rustls")]
+             Self::WebTransport(s) => s.copy(writer).await,
++            #[cfg(feature = "rustls")]
+             Self::WebTransportUdp(s) => s.copy(writer).await,
+         }
+     }
+@@ -59,7 +64,9 @@ pub enum TransportWriter {
+     Websocket(WebsocketTransportWrite),
+     Http2(Http2TransportWrite),
+     // Boxed for the same reason as `TunnelReader::WebTransport`.
++    #[cfg(feature = "rustls")]
+     WebTransport(Box<WebTransportWrite>),
++    #[cfg(feature = "rustls")]
+     WebTransportUdp(Box<WebTransportUdpWrite>),
+ }
+ 
+@@ -68,7 +75,9 @@ impl TransportWrite for TransportWriter {
+         match self {
+             Self::Websocket(s) => s.buf_mut(),
+             Self::Http2(s) => s.buf_mut(),
++            #[cfg(feature = "rustls")]
+             Self::WebTransport(s) => s.buf_mut(),
++            #[cfg(feature = "rustls")]
+             Self::WebTransportUdp(s) => s.buf_mut(),
+         }
+     }
+@@ -77,7 +86,9 @@ impl TransportWrite for TransportWriter {
+         match self {
+             Self::Websocket(s) => s.write().await,
+             Self::Http2(s) => s.write().await,
++            #[cfg(feature = "rustls")]
+             Self::WebTransport(s) => s.write().await,
++            #[cfg(feature = "rustls")]
+             Self::WebTransportUdp(s) => s.write().await,
+         }
+     }
+@@ -86,7 +97,9 @@ impl TransportWrite for TransportWriter {
+         match self {
+             Self::Websocket(s) => s.ping().await,
+             Self::Http2(s) => s.ping().await,
++            #[cfg(feature = "rustls")]
+             Self::WebTransport(s) => s.ping().await,
++            #[cfg(feature = "rustls")]
+             Self::WebTransportUdp(s) => s.ping().await,
+         }
+     }
+@@ -95,7 +108,9 @@ impl TransportWrite for TransportWriter {
+         match self {
+             Self::Websocket(s) => s.close().await,
+             Self::Http2(s) => s.close().await,
++            #[cfg(feature = "rustls")]
+             Self::WebTransport(s) => s.close().await,
++            #[cfg(feature = "rustls")]
+             Self::WebTransportUdp(s) => s.close().await,
+         }
+     }
+@@ -104,7 +119,9 @@ impl TransportWrite for TransportWriter {
+         match self {
+             Self::Websocket(s) => s.pending_operations_notify(),
+             Self::Http2(s) => s.pending_operations_notify(),
++            #[cfg(feature = "rustls")]
+             Self::WebTransport(s) => s.pending_operations_notify(),
++            #[cfg(feature = "rustls")]
+             Self::WebTransportUdp(s) => s.pending_operations_notify(),
+         }
+     }
+@@ -113,7 +130,9 @@ impl TransportWrite for TransportWriter {
+         match self {
+             Self::Websocket(s) => s.handle_pending_operations().await,
+             Self::Http2(s) => s.handle_pending_operations().await,
++            #[cfg(feature = "rustls")]
+             Self::WebTransport(s) => s.handle_pending_operations().await,
++            #[cfg(feature = "rustls")]
+             Self::WebTransportUdp(s) => s.handle_pending_operations().await,
+         }
+     }
+--- a/wstunnel/src/tunnel/transport/mod.rs
++++ b/wstunnel/src/tunnel/transport/mod.rs
+@@ -11,6 +11,7 @@ pub mod io;
+ mod jwt;
+ mod types;
+ pub mod websocket;
++#[cfg(feature = "rustls")]
+ pub mod webtransport;
+ 
+ pub use jwt::JWT_HEADER_PREFIX;
+--- a/wstunnel/src/tunnel/transport/types.rs
++++ b/wstunnel/src/tunnel/transport/types.rs
+@@ -34,7 +34,10 @@ impl TransportScheme {
+             Self::Http => vec![],
+             Self::Https => vec![b"h2".to_vec()],
+             // WebTransport rides HTTP/3, whose ALPN is "h3"
++            #[cfg(feature = "rustls")]
+             Self::Wts => vec![web_transport_quinn::ALPN.as_bytes().to_vec()],
++            #[cfg(not(feature = "rustls"))]
++            Self::Wts => vec![],
+         }
+     }
+ 
+@@ -42,6 +45,10 @@ impl TransportScheme {
+     pub const fn is_webtransport(self) -> bool {
+         matches!(self, Self::Wts)
+     }
++
++    /// `wts://` / `--enable-webtransport` need rustls (via quinn). TCP TLS is BoringSSL.
++    pub const RUSTLS_REQUIRED_FOR_WEBTRANSPORT: &str =
++        "WebTransport (wts://) requires the `rustls` crate feature. Rebuild with `--features rustls`.";
+ }
+ impl FromStr for TransportScheme {
+     type Err = ();
+--- a/wstunnel/src/tunnel/transport/websocket.rs
++++ b/wstunnel/src/tunnel/transport/websocket.rs
+@@ -1,12 +1,11 @@
+ use super::io::{MAX_PACKET_LENGTH, TransportRead, TransportWrite};
+ use crate::tunnel::RemoteAddr;
+ use crate::tunnel::client::Client;
+-use crate::tunnel::client::connection_pool::{L4ReadHalf, L4Stream, L4WriteHalf};
++use crate::tunnel::client::connection_pool::{L4ReadHalf, L4Stream, L4WriteHalf, take_l4_stream};
+ use crate::tunnel::transport::headers_from_file;
+ use crate::tunnel::transport::jwt::{JWT_HEADER_PREFIX, tunnel_to_jwt_token};
+ use anyhow::{Context, anyhow};
+ use bytes::{Bytes, BytesMut};
+-use either::Either;
+ use fastwebsockets::{CloseCode, Frame, OpCode, Payload, Role, WebSocket, WebSocketRead, WebSocketWrite};
+ use http_body_util::Empty;
+ use hyper::Request;
+@@ -315,10 +314,8 @@ pub async fn connect(
+         )
+     })?;
+     debug!("with HTTP upgrade request {req:?}");
+-    let transport = pooled_cnx
+-        .take()
+-        .and_then(Either::left)
+-        .ok_or_else(|| anyhow!("the connection pool did not return a TCP stream"))?;
++    let transport =
++        take_l4_stream(&mut pooled_cnx).ok_or_else(|| anyhow!("the connection pool did not return a TCP stream"))?;
+ 
+     let (ws, response) = fastwebsockets::handshake::client(&TokioExecutor::new(), req, transport)
+         .await

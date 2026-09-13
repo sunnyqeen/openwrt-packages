@@ -1,0 +1,261 @@
+From 9f5b1b0f4fe794f50a14957e8f1f99f1f703fa3c Mon Sep 17 00:00:00 2001
+From: Jimmy Qin <sunnyqeen@gmail.com>
+Date: Fri, 11 Sep 2026 13:19:59 +0200
+Subject: Serve optional HTML for non-websocket HTTP requests so probes see a
+ normal page instead of 400.
+
+
+--- a/wstunnel/src/config.rs
++++ b/wstunnel/src/config.rs
+@@ -410,6 +410,21 @@ pub struct ServerCreationRequest {
+     )]
+     pub http_proxy_password: Option<String>,
+ 
++    /// Answer non websocket-upgrade HTTP requests with this HTML instead of 400 Bad Request.
++    /// Value is either a path to an HTML file on disk, or a raw HTML string.
++    /// If the path exists as a file it is served; otherwise the value is returned as HTML.
++    /// If unset, those requests keep returning 400 Bad Request.
++    #[cfg_attr(
++        feature = "clap",
++        arg(
++            long,
++            value_name = "HTML|FILE_PATH",
++            verbatim_doc_comment,
++            env = "WSTUNNEL_HTTP_FALLBACK_HTML"
++        )
++    )]
++    pub http_fallback_html: Option<String>,
++
+     /// Configure how much time a remote-to-local server is going to wait idle (without any new ws clients) before unbinding itself/stopping the server
+     /// Default is 190 seconds/3min
+     #[cfg_attr(feature = "clap", arg(
+--- a/wstunnel/src/lib.rs
++++ b/wstunnel/src/lib.rs
+@@ -20,7 +20,7 @@ use crate::tunnel::downstream_listeners::{
+     HttpProxyDownstreamListener, Socks5DownstreamListener, TcpDownstreamListener, UdpDownstreamListener,
+     new_stdio_listener,
+ };
+-use crate::tunnel::server::{Server, ServerConfig, TlsServerConfig};
++use crate::tunnel::server::{HttpFallbackHtml, Server, ServerConfig, TlsServerConfig};
+ use crate::tunnel::transport::webtransport::WebTransportEndpoint;
+ use crate::tunnel::transport::{TransportAddr, TransportScheme};
+ use crate::tunnel::upstream_connectors::{Socks5UpstreamConnector, TcpUpstreamConnector, UdpUpstreamConnector};
+@@ -582,6 +582,7 @@ async fn run_server_impl(args: ServerCreationRequest, executor: impl TokioExecut
+         // wts:// on the server means "TLS, and also serve webtransport", so it implies the flag.
+         // The TCP listener still runs, serving websocket and http2 as usual.
+         enable_webtransport: args.enable_webtransport || is_webtransport,
++        http_fallback_html: args.http_fallback_html.map(HttpFallbackHtml::from_cli_arg),
+     };
+     let server = Server::new(server_config, executor);
+ 
+--- a/wstunnel/src/test_integrations.rs
++++ b/wstunnel/src/test_integrations.rs
+@@ -82,6 +82,7 @@ fn server_no_tls(dns_resolver: DnsResolver) -> Server {
+         http_proxy: None,
+         remote_server_idle_timeout: Duration::from_secs(30),
+         enable_webtransport: false,
++        http_fallback_html: None,
+     };
+     Server::new(server_config, DefaultTokioExecutor::default())
+ }
+@@ -108,6 +109,7 @@ fn server_webtransport(dns_resolver: DnsResolver) -> Server {
+         http_proxy: None,
+         remote_server_idle_timeout: Duration::from_secs(30),
+         enable_webtransport: true,
++        http_fallback_html: None,
+     };
+     Server::new(server_config, DefaultTokioExecutor::default())
+ }
+--- a/wstunnel/src/tunnel/server/handler_websocket.rs
++++ b/wstunnel/src/tunnel/server/handler_websocket.rs
+@@ -1,6 +1,7 @@
+ use crate::executor::TokioExecutorRef;
+ use crate::restrictions::types::RestrictionsRules;
+ use crate::tunnel::server::Server;
++use crate::tunnel::server::non_upgrade_response;
+ use crate::tunnel::server::utils::{HttpResponse, bad_request, inject_cookie};
+ use crate::tunnel::transport;
+ use crate::tunnel::transport::websocket::mk_websocket_tunnel;
+@@ -24,7 +25,7 @@ pub(super) async fn ws_server_upgrade(
+ ) -> HttpResponse {
+     if !fastwebsockets::upgrade::is_upgrade_request(&req) {
+         warn!("Rejecting connection with bad upgrade request: {}", req.uri());
+-        return bad_request();
++        return non_upgrade_response(server.config.http_fallback_html.as_ref());
+     }
+ 
+     let mask_frame = server.config.websocket_mask_frame;
+--- a/wstunnel/src/tunnel/server/mod.rs
++++ b/wstunnel/src/tunnel/server/mod.rs
+@@ -6,6 +6,8 @@ mod reverse_tunnel;
+ mod server;
+ mod utils;
+ 
++pub use server::HttpFallbackHtml;
+ pub use server::Server;
+ pub use server::ServerConfig;
+ pub use server::TlsServerConfig;
++pub(crate) use server::non_upgrade_response;
+--- a/wstunnel/src/tunnel/server/server.rs
++++ b/wstunnel/src/tunnel/server/server.rs
+@@ -25,6 +25,7 @@ use arc_swap::ArcSwap;
+ use futures_util::FutureExt;
+ use http_body_util::Either;
+ use hyper::body::Incoming;
++use hyper::header::CONTENT_TYPE;
+ use hyper::server::conn::{http1, http2};
+ use hyper::service::service_fn;
+ use hyper::{Request, StatusCode, Version, http};
+@@ -70,6 +71,64 @@ pub struct ServerConfig {
+     /// Additionally serve WebTransport over UDP on the same port as the TCP listener.
+     /// Requires TLS, since QUIC mandates TLS 1.3.
+     pub enable_webtransport: bool,
++    /// If set, non websocket-upgrade HTTP requests are answered with this HTML page.
++    /// If unset, those requests return 400 Bad Request.
++    pub http_fallback_html: Option<HttpFallbackHtml>,
++}
++
++/// HTML served for regular HTTP requests that are not a websocket upgrade.
++#[derive(Debug, Clone)]
++pub enum HttpFallbackHtml {
++    /// Serve this HTML string as the response body.
++    Inline(String),
++    /// Read and serve this file from disk as the response body.
++    File(PathBuf),
++}
++
++impl HttpFallbackHtml {
++    /// Treat an existing filesystem path as a file to serve; otherwise keep the value as HTML.
++    pub fn from_cli_arg(value: String) -> Self {
++        let path = PathBuf::from(&value);
++        if path.is_file() {
++            Self::File(path)
++        } else {
++            let looks_like_html_file = path.is_absolute()
++                || path
++                    .extension()
++                    .and_then(|ext| ext.to_str())
++                    .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"));
++            if looks_like_html_file {
++                warn!(
++                    "--http-fallback-html looks like a file path ({}) but the file does not exist; serving the value as an HTML string",
++                    path.display()
++                );
++            }
++            Self::Inline(value)
++        }
++    }
++}
++
++fn html_response(html: String) -> HttpResponse {
++    http::Response::builder()
++        .status(StatusCode::OK)
++        .header(CONTENT_TYPE, "text/html; charset=utf-8")
++        .body(Either::Left(html))
++        .unwrap()
++}
++
++/// Answer a non websocket-upgrade HTTP request: the configured HTML page, or 400 if unset.
++pub(crate) fn non_upgrade_response(fallback: Option<&HttpFallbackHtml>) -> HttpResponse {
++    match fallback {
++        None => bad_request(),
++        Some(HttpFallbackHtml::Inline(html)) => html_response(html.clone()),
++        Some(HttpFallbackHtml::File(path)) => match std::fs::read_to_string(path) {
++            Ok(html) => html_response(html),
++            Err(err) => {
++                warn!("Failed to read HTTP fallback HTML {}: {err}", path.display());
++                bad_request()
++            }
++        },
++    }
+ }
+ 
+ #[derive(Clone)]
+@@ -114,7 +173,7 @@ impl<E: crate::TokioExecutorRef> Server<E> {
+ 
+         let path_prefix = extract_path_prefix(req.uri().path()).map_err(|err| {
+             warn!("Rejecting connection with {err}: {}", req.uri());
+-            bad_request()
++            non_upgrade_response(self.config.http_fallback_html.as_ref())
+         })?;
+ 
+         if let Some(restrict_path) = restrict_path_prefix
+@@ -413,10 +472,7 @@ impl<E: crate::TokioExecutorRef> Server<E> {
+                         .await
+                     } else {
+                         error!("Invalid protocol version request, got {:?} while expecting either websocket http1 upgrade or http2", req.version());
+-                        Ok(http::Response::builder()
+-                            .status(StatusCode::BAD_REQUEST)
+-                            .body(Either::Left("Invalid protocol request".to_string()))
+-                            .unwrap())
++                        Ok(non_upgrade_response(server.config.http_fallback_html.as_ref()))
+                     }
+                 }
+                     .instrument(mk_span())
+@@ -589,6 +645,7 @@ impl Debug for ServerConfig {
+             .field("tls", &self.tls.is_some())
+             .field("remote_server_idle_timeout", &self.remote_server_idle_timeout)
+             .field("enable_webtransport", &self.enable_webtransport)
++            .field("http_fallback_html", &self.http_fallback_html)
+             .field(
+                 "mTLS",
+                 &self
+@@ -619,3 +676,58 @@ impl TlsContext<'_> {
+         &self.tls_acceptor
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use http_body_util::Either;
++
++    #[test]
++    fn non_upgrade_without_option_is_bad_request() {
++        let response = non_upgrade_response(None);
++        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
++        assert!(matches!(response.into_body(), Either::Left(body) if body == "Invalid request"));
++    }
++
++    #[test]
++    fn non_upgrade_inline_html() {
++        let fallback = HttpFallbackHtml::Inline("<html>hi</html>".to_string());
++        let response = non_upgrade_response(Some(&fallback));
++        assert_eq!(response.status(), StatusCode::OK);
++        assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "text/html; charset=utf-8");
++        assert!(matches!(response.into_body(), Either::Left(body) if body == "<html>hi</html>"));
++    }
++
++    #[test]
++    fn non_upgrade_file_html() {
++        let path = std::env::temp_dir().join("wstunnel_fallback_test.html");
++        std::fs::write(&path, "<html>from file</html>").unwrap();
++        let fallback = HttpFallbackHtml::File(path.clone());
++        let response = non_upgrade_response(Some(&fallback));
++        let _ = std::fs::remove_file(&path);
++        assert_eq!(response.status(), StatusCode::OK);
++        assert!(matches!(response.into_body(), Either::Left(body) if body == "<html>from file</html>"));
++    }
++
++    #[test]
++    fn from_cli_arg_inline_when_not_a_file() {
++        let parsed = HttpFallbackHtml::from_cli_arg("<h1>ok</h1>".to_string());
++        assert!(matches!(parsed, HttpFallbackHtml::Inline(s) if s == "<h1>ok</h1>"));
++    }
++
++    #[test]
++    fn from_cli_arg_file_when_path_exists() {
++        let path = std::env::temp_dir().join("wstunnel_fallback_cli_test.html");
++        std::fs::write(&path, "x").unwrap();
++        let parsed = HttpFallbackHtml::from_cli_arg(path.to_string_lossy().into_owned());
++        let _ = std::fs::remove_file(&path);
++        assert!(matches!(parsed, HttpFallbackHtml::File(p) if p == path));
++    }
++
++    #[test]
++    fn missing_fallback_file_is_bad_request() {
++        let fallback = HttpFallbackHtml::File(PathBuf::from("this-wstunnel-fallback-file-does-not-exist.html"));
++        let response = non_upgrade_response(Some(&fallback));
++        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
++    }
++}

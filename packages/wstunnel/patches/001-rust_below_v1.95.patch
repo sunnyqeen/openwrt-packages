@@ -1,0 +1,51 @@
+From d93c5ca263dc8d1e5f4d59210716aabad9a0a4d2 Mon Sep 17 00:00:00 2001
+From: Jimmy Qin <sunnyqeen@gmail.com>
+Date: Fri, 11 Sep 2026 13:20:00 +0200
+Subject: Replace cfg_select with cfg attributes so the crate builds on Rust
+ 1.94 and below.
+
+
+--- a/wstunnel/src/protocols/dns/resolver.rs
++++ b/wstunnel/src/protocols/dns/resolver.rs
+@@ -191,24 +191,24 @@ impl DnsResolver {
+ 
+         // no dns resolver specified, fall-back to default one
+         if resolvers.is_empty() {
+-            cfg_select! {
+-                target_os = "android" => {
+-                    // Android requires ndk to be initialized to read the system dns resolver.
+-                    warn!("Fall-backing to system dns resolver. You should consider specifying a dns resolver. To avoid performance issue");
++            // Android requires ndk to be initialized to read the system dns resolver.
++            #[cfg(target_os = "android")]
++            {
++                warn!("Fall-backing to system dns resolver. You should consider specifying a dns resolver. To avoid performance issue");
++                return Ok(Self::System);
++            }
++            #[cfg(not(target_os = "android"))]
++            {
++                let Ok((cfg, opts)) = hickory_resolver::system_conf::read_system_conf() else {
++                    warn!(
++                        "Fall-backing to system dns resolver. You should consider specifying a dns resolver. To avoid performance issue"
++                    );
+                     return Ok(Self::System);
+-                }
+-                _ => {
+-                    let Ok((cfg, opts)) = hickory_resolver::system_conf::read_system_conf() else {
+-                        warn!(
+-                            "Fall-backing to system dns resolver. You should consider specifying a dns resolver. To avoid performance issue"
+-                        );
+-                        return Ok(Self::System);
+-                    };
+-                    return Ok(Self::TrustDns {
+-                        resolver: Box::new(mk_resolver(cfg, opts, proxy, so_mark)?),
+-                        prefer_ipv6,
+-                    });
+-                }
++                };
++                return Ok(Self::TrustDns {
++                    resolver: Box::new(mk_resolver(cfg, opts, proxy, so_mark)?),
++                    prefer_ipv6,
++                });
+             }
+         };
+ 

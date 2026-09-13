@@ -1,0 +1,1313 @@
+From cb13b464b3f798f8cf40f671a26751585eaeeac7 Mon Sep 17 00:00:00 2001
+From: Jimmy Qin <sunnyqeen@gmail.com>
+Date: Sat, 12 Sep 2026 11:55:22 +0200
+Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
+ use rustls.
+
+
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -459,6 +459,31 @@ dependencies = [
+  "time",
+ ]
+ 
++[[package]]
++name = "boring"
++version = "4.22.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3b0e3bc837369e9e662d3845c374ac3771b054d4bc2dee5457591198d16d684c"
++dependencies = [
++ "bitflags 2.13.1",
++ "boring-sys",
++ "foreign-types",
++ "libc",
++ "openssl-macros",
++]
++
++[[package]]
++name = "boring-sys"
++version = "4.22.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "15aad385759d3da2737772aefb391332227bef7cb71fb85c106cadd9d1e63a98"
++dependencies = [
++ "bindgen",
++ "cmake",
++ "fs_extra",
++ "fslock",
++]
++
+ [[package]]
+ name = "bs58"
+ version = "0.5.1"
+@@ -1194,6 +1219,33 @@ version = "0.2.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+ 
++[[package]]
++name = "foreign-types"
++version = "0.5.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d737d9aa519fb7b749cbc3b962edcf310a8dd1f4b67c91c4f83975dbdd17d965"
++dependencies = [
++ "foreign-types-macros",
++ "foreign-types-shared",
++]
++
++[[package]]
++name = "foreign-types-macros"
++version = "0.2.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ea5190182e6915eb873ddbc16e23b711b6eb1f9c00a0d0a3a91b5f6228475225"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 3.0.4",
++]
++
++[[package]]
++name = "foreign-types-shared"
++version = "0.3.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
++
+ [[package]]
+ name = "form_urlencoded"
+ version = "1.2.2"
+@@ -1218,6 +1270,16 @@ dependencies = [
+  "libc",
+ ]
+ 
++[[package]]
++name = "fslock"
++version = "0.2.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "04412b8935272e3a9bae6f48c7bfff74c2911f60525404edfdd28e49884c3bfb"
++dependencies = [
++ "libc",
++ "winapi 0.3.9",
++]
++
+ [[package]]
+ name = "futures"
+ version = "0.3.34"
+@@ -2467,6 +2529,17 @@ version = "1.70.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+ 
++[[package]]
++name = "openssl-macros"
++version = "0.1.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a948666b637a0f465e8564c73e89d4dde00d72d4d473cc972f390fc3dcee7d9c"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.119",
++]
++
+ [[package]]
+ name = "openssl-probe"
+ version = "0.2.1"
+@@ -3111,15 +3184,6 @@ dependencies = [
+  "security-framework",
+ ]
+ 
+-[[package]]
+-name = "rustls-pemfile"
+-version = "2.2.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
+-dependencies = [
+- "rustls-pki-types",
+-]
+-
+ [[package]]
+ name = "rustls-pki-types"
+ version = "1.15.1"
+@@ -3904,6 +3968,17 @@ dependencies = [
+  "windows-sys 0.61.2",
+ ]
+ 
++[[package]]
++name = "tokio-boring"
++version = "4.22.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a7b5955a3dc76ca07e3401e07d35f98c968e28f1a6126b552a51fa4bccd75528"
++dependencies = [
++ "boring",
++ "boring-sys",
++ "tokio",
++]
++
+ [[package]]
+ name = "tokio-fd"
+ version = "0.3.0"
+@@ -4676,6 +4751,7 @@ dependencies = [
+  "aws-lc-rs",
+  "base64 0.23.1",
+  "bb8",
++ "boring",
+  "bytes",
+  "clap",
+  "collection_macros",
+@@ -4702,8 +4778,8 @@ dependencies = [
+  "rcgen",
+  "regex",
+  "rstest",
++ "rustls",
+  "rustls-native-certs",
+- "rustls-pemfile",
+  "scopeguard",
+  "serde",
+  "serde_regex",
+@@ -4714,8 +4790,8 @@ dependencies = [
+  "testcontainers",
+  "time",
+  "tokio",
++ "tokio-boring",
+  "tokio-fd",
+- "tokio-rustls",
+  "tokio-stream",
+  "tokio-util",
+  "tracing",
+--- a/wstunnel/Cargo.toml
++++ b/wstunnel/Cargo.toml
+@@ -38,10 +38,13 @@ pin-project = "1"
+ notify = { version = "8.2.0", features = [] }
+ httparse = { version = "1.10.1", features = [] }
+ 
++boring = { version = "4.19.0" }
++tokio-boring = { version = "4.19.0" }
++# rustls is kept only for QUIC/WebTransport (web-transport-quinn/quinn) and Hickory DoT/DoH.
++# TCP tunnel TLS uses BoringSSL via tokio-boring.
++rustls = { version = "0.23.43", default-features = false, features = ["logging", "std", "tls12"] }
+ rustls-native-certs = { version = "0.8.4", features = [] }
+-rustls-pemfile = { version = "2.2.0", features = [] }
+-# WebTransport (HTTP/3 over QUIC) transport. Takes our own rustls config, so the
+-# crypto provider follows from the aws-lc-rs/ring features below. Re-exports quinn.
++# WebTransport (HTTP/3 over QUIC) transport. Takes a rustls config for the QUIC handshake.
+ # Its default feature is aws-lc-rs, which would pull aws-lc-sys into the ring builds.
+ web-transport-quinn = { version = "0.12.1", default-features = false, features = [] }
+ x509-parser = "0.18.1"
+@@ -59,7 +62,6 @@ derive_more = { version = "2.1.1", features = ["display", "error"] }
+ # connection pool, whose connection is either a TCP stream or a webtransport session.
+ either = { version = "1.18.0", default-features = false, features = ["use_std"] }
+ 
+-tokio-rustls = { version = "0.26.4", default-features = false, features = ["logging", "tls12"] }
+ rcgen = { version = "0.14.10", default-features = false, features = [] }
+ # Already compiled in the tree (rcgen, x509-parser -> asn1-rs, which also turns on `std`);
+ # declared directly so embedded_certificate can read the current year.
+@@ -87,7 +89,7 @@ get_if_addrs = "0.5.3"
+ default = ["aws-lc-rs"]
+ clap = ["dep:clap"]
+ aws-lc-rs = [
+-  "tokio-rustls/aws-lc-rs",
++  "rustls/aws-lc-rs",
+   "rcgen/aws_lc_rs",
+   "hickory-resolver/tls-aws-lc-rs",
+   "hickory-resolver/https-aws-lc-rs",
+@@ -96,7 +98,7 @@ aws-lc-rs = [
+ ]
+ aws-lc-rs-bindgen = ["dep:aws-lc-rs", "aws-lc-rs/bindgen"]
+ ring = [
+-  "tokio-rustls/ring",
++  "rustls/ring",
+   "rcgen/ring",
+   "hickory-resolver/tls-ring",
+   "hickory-resolver/https-ring",
+--- a/wstunnel/src/config.rs
++++ b/wstunnel/src/config.rs
+@@ -3,7 +3,6 @@ pub use hyper::http::{HeaderName, HeaderValue};
+ use std::net::SocketAddr;
+ use std::path::PathBuf;
+ use std::time::Duration;
+-use tokio_rustls::rustls::pki_types::DnsName;
+ use url::{Host, Url};
+ 
+ pub const DEFAULT_CLIENT_UPGRADE_PATH_PREFIX: &str = "v1";
+@@ -90,7 +89,7 @@ pub struct ClientCreationRequest {
+     /// Warning: If you are behind a CDN (i.e: Cloudflare) you must set this domain also in the http HOST header.
+     ///          or it will be flagged as fishy and your request rejected
+     #[cfg_attr(feature = "clap", arg(long, value_name = "DOMAIN_NAME", value_parser = parsers::parse_sni_override, verbatim_doc_comment))]
+-    pub tls_sni_override: Option<DnsName<'static>>,
++    pub tls_sni_override: Option<String>,
+ 
+     /// Disable sending SNI during TLS handshake
+     /// Warning: Most reverse proxies rely on it
+@@ -460,7 +459,6 @@ mod parsers {
+     use std::path::PathBuf;
+     use std::str::FromStr;
+     use std::time::Duration;
+-    use tokio_rustls::rustls::pki_types::DnsName;
+     use url::{Host, Url};
+ 
+     pub fn parse_duration_sec(arg: &str) -> Result<Duration, io::Error> {
+@@ -720,11 +718,11 @@ mod parsers {
+         })
+     }
+ 
+-    pub fn parse_sni_override(arg: &str) -> Result<DnsName<'static>, io::Error> {
+-        match DnsName::try_from(arg.to_string()) {
+-            Ok(val) => Ok(val),
+-            Err(err) => Err(io::Error::new(ErrorKind::InvalidInput, format!("Invalid sni override: {err}"))),
++    pub fn parse_sni_override(arg: &str) -> Result<String, io::Error> {
++        if arg.is_empty() || arg.contains('\0') {
++            return Err(io::Error::new(ErrorKind::InvalidInput, format!("Invalid sni override: {arg}")));
+         }
++        Ok(arg.to_string())
+     }
+ 
+     pub fn parse_http_headers(arg: &str) -> Result<(HeaderName, HeaderValue), io::Error> {
+--- a/wstunnel/src/embedded_certificate.rs
++++ b/wstunnel/src/embedded_certificate.rs
+@@ -1,10 +1,11 @@
++use boring::pkey::{PKey, Private};
++use boring::x509::X509;
+ use log::info;
+ use rcgen::{CertificateParams, DnType, KeyPair, date_time_ymd};
+ use std::sync::LazyLock;
+ use time::OffsetDateTime;
+-use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+ 
+-pub static TLS_CERTIFICATE: LazyLock<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> = LazyLock::new(|| {
++pub static TLS_CERTIFICATE: LazyLock<(Vec<X509>, PKey<Private>)> = LazyLock::new(|| {
+     info!("Generating self-signed tls certificate");
+ 
+     let key_pair = KeyPair::generate().unwrap();
+@@ -16,8 +17,9 @@ pub static TLS_CERTIFICATE: LazyLock<(Vec<CertificateDer<'static>>, PrivateKeyDe
+     cert.not_before = date_time_ymd(now.year(), now.month() as u8, 1);
+     cert.not_after = date_time_ymd(now.year() + 1, now.month() as u8, 1);
+ 
+-    let cert = cert.self_signed(&key_pair).unwrap().der().clone();
+-    let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialized_der().to_vec()));
++    let cert = cert.self_signed(&key_pair).unwrap();
++    let x509 = X509::from_der(cert.der()).expect("rcgen certificate is valid DER");
++    let private_key = PKey::private_key_from_der(key_pair.serialized_der()).expect("rcgen key is valid DER");
+ 
+-    (vec![cert], private_key)
++    (vec![x509], private_key)
+ });
+--- a/wstunnel/src/lib.rs
++++ b/wstunnel/src/lib.rs
+@@ -74,8 +74,7 @@ pub async fn create_client(
+         // to be the common name (CN) of the client's certificate.
+         tls_certificate
+             .as_ref()
+-            .and_then(|certs| tls::find_leaf_certificate(certs.as_slice()))
+-            .and_then(|leaf_cert| tls::cn_from_certificate(&leaf_cert))
++            .and_then(|certs| tls::find_leaf_cn_from_x509(certs.as_slice()))
+             .unwrap_or(args.http_upgrade_path_prefix)
+     } else {
+         args.http_upgrade_path_prefix
+@@ -114,25 +113,14 @@ pub async fn create_client(
+     let tls = match transport_scheme {
+         TransportScheme::Ws | TransportScheme::Http => None,
+         TransportScheme::Wts | TransportScheme::Wss | TransportScheme::Https => {
+-            let ech_config = if args.tls_ech_enable {
+-                #[cfg(not(feature = "aws-lc-rs"))]
+-                return Err(anyhow!(
+-                    "Your current build does not support ECH. You need to use aws-lc crypto provider"
+-                ));
+-
+-                #[cfg(feature = "aws-lc-rs")]
+-                dns_resolver
+-                    .lookup_ech_config(&args.remote_addr.host().unwrap().to_owned())
+-                    .await?
+-            } else {
+-                None
+-            };
++            if args.tls_ech_enable {
++                return Err(anyhow!("--tls-ech-enable is not supported with the BoringSSL TLS backend"));
++            }
+ 
+             let tls_connector = tls::tls_connector(
+                 args.tls_verify_certificate,
+                 transport_scheme.alpn_protocols(),
+                 !args.tls_sni_disable,
+-                ech_config,
+                 tls_certificate,
+                 tls_key,
+             )
+@@ -513,7 +501,7 @@ async fn run_server_impl(args: ServerCreationRequest, executor: impl TokioExecut
+         let tls_key = if let Some(key_path) = &args.tls_private_key {
+             tls::load_private_key_from_file(key_path).expect("Cannot load tls private key")
+         } else {
+-            embedded_certificate::TLS_CERTIFICATE.1.clone_key()
++            embedded_certificate::TLS_CERTIFICATE.1.clone()
+         };
+ 
+         let tls_client_ca_certificates = args.tls_client_ca_certs.as_ref().map(|tls_client_ca| {
+--- a/wstunnel/src/protocols/dns/resolver.rs
++++ b/wstunnel/src/protocols/dns/resolver.rs
+@@ -17,10 +17,10 @@ use url::{Host, Url};
+ 
+ #[cfg(feature = "aws-lc-rs")]
+ use hickory_resolver::net::NetError;
+-use tokio_rustls::rustls;
+-use tokio_rustls::rustls::ClientConfig;
++use rustls;
++use rustls::ClientConfig;
+ #[cfg(feature = "aws-lc-rs")]
+-use tokio_rustls::rustls::client::EchConfig;
++use rustls::client::EchConfig;
+ 
+ // Interleave v4 and v6 addresses as per RFC8305.
+ // The first address is v6 if we have any v6 addresses.
+@@ -74,8 +74,8 @@ impl DnsResolver {
+     pub async fn lookup_ech_config(&self, domain: &Host) -> Result<Option<EchConfig>, NetError> {
+         use hickory_resolver::proto::rr::rdata::svcb::{SvcParamKey, SvcParamValue};
+         use hickory_resolver::proto::rr::{RData, RecordType};
+-        use tokio_rustls::rustls::crypto::aws_lc_rs::hpke::ALL_SUPPORTED_SUITES;
+-        use tokio_rustls::rustls::pki_types::EchConfigListBytes;
++        use rustls::crypto::aws_lc_rs::hpke::ALL_SUPPORTED_SUITES;
++        use rustls::pki_types::EchConfigListBytes;
+ 
+         let resolver = match self {
+             DnsResolver::TrustDns { resolver, .. } => resolver,
+@@ -194,7 +194,9 @@ impl DnsResolver {
+             // Android requires ndk to be initialized to read the system dns resolver.
+             #[cfg(target_os = "android")]
+             {
+-                warn!("Fall-backing to system dns resolver. You should consider specifying a dns resolver. To avoid performance issue");
++                warn!(
++                    "Fall-backing to system dns resolver. You should consider specifying a dns resolver. To avoid performance issue"
++                );
+                 return Ok(Self::System);
+             }
+             #[cfg(not(target_os = "android"))]
+--- a/wstunnel/src/protocols/tls/mod.rs
++++ b/wstunnel/src/protocols/tls/mod.rs
+@@ -1,6 +1,10 @@
+ mod server;
+ mod utils;
+ 
++pub use server::Certificate;
++pub use server::PrivateKey;
++pub use server::TlsAcceptor;
++pub use server::TlsConnector;
+ pub use server::connect;
+ pub use server::load_certificates_from_pem;
+ pub use server::load_private_key_from_file;
+@@ -9,4 +13,6 @@ pub use server::quic_server_config;
+ pub use server::tls_acceptor;
+ pub use server::tls_connector;
+ pub use utils::cn_from_certificate;
++pub use utils::cn_from_x509;
+ pub use utils::find_leaf_certificate;
++pub use utils::find_leaf_cn_from_x509;
+--- a/wstunnel/src/protocols/tls/server.rs
++++ b/wstunnel/src/protocols/tls/server.rs
+@@ -1,189 +1,211 @@
+ use anyhow::{Context, anyhow};
+-use std::fs::File;
+-use tokio_rustls::rustls::client::{EchConfig, EchMode};
+-
++use boring::pkey::{PKey, Private};
++use boring::ssl::{
++    AlpnError, SslAcceptor, SslAcceptorBuilder, SslConnector, SslConnectorBuilder, SslMethod, SslVerifyMode,
++};
++use boring::x509::X509;
++use boring::x509::store::X509StoreBuilder;
+ use log::warn;
+-use std::io::BufReader;
++use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
++use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
++use rustls::server::WebPkiClientVerifier;
++use rustls::server::danger::ClientCertVerifier;
++use rustls::{DigitallySignedStruct, Error, KeyLogFile, RootCertStore, SignatureScheme};
++use std::fs;
++use std::io::Write;
+ use std::path::Path;
+ use std::sync::Arc;
+ use tokio::net::TcpStream;
+-use tokio_rustls::client::TlsStream;
++use tokio_boring::SslStream;
++use tracing::info;
+ 
+ use crate::tunnel::client::ClientConfig;
+ use crate::tunnel::server::TlsServerConfig;
+ use crate::tunnel::transport::TransportAddr;
+-use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+-use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+-use tokio_rustls::rustls::server::WebPkiClientVerifier;
+-use tokio_rustls::rustls::server::danger::ClientCertVerifier;
+-use tokio_rustls::rustls::{DigitallySignedStruct, Error, KeyLogFile, RootCertStore, SignatureScheme};
+-use tokio_rustls::{TlsAcceptor, TlsConnector, rustls};
+-use tracing::info;
+-
+-#[derive(Debug)]
+-struct NullVerifier;
+ 
+-impl ServerCertVerifier for NullVerifier {
+-    fn verify_server_cert(
+-        &self,
+-        _end_entity: &CertificateDer<'_>,
+-        _intermediates: &[CertificateDer<'_>],
+-        _server_name: &ServerName<'_>,
+-        _ocsp_response: &[u8],
+-        _now: UnixTime,
+-    ) -> Result<ServerCertVerified, Error> {
+-        Ok(ServerCertVerified::assertion())
++pub type Certificate = X509;
++pub type PrivateKey = PKey<Private>;
++pub type TlsConnector = SslConnector;
++pub type TlsAcceptor = SslAcceptor;
++
++/// Pick a server protocol from the client's ALPN list so the returned slice
++/// borrows `client` (required by BoringSSL's select callback).
++fn select_alpn_from_client<'a>(offered: &[Vec<u8>], client: &'a [u8]) -> Result<&'a [u8], AlpnError> {
++    let mut rest = client;
++    while let Some((&len, tail)) = rest.split_first() {
++        let len = usize::from(len);
++        if tail.len() < len {
++            break;
++        }
++        let (proto, tail) = tail.split_at(len);
++        if offered.iter().any(|offered| offered.as_slice() == proto) {
++            return Ok(proto);
++        }
++        rest = tail;
+     }
++    Err(AlpnError::NOACK)
++}
+ 
+-    fn verify_tls12_signature(
+-        &self,
+-        _message: &[u8],
+-        _cert: &CertificateDer<'_>,
+-        _dss: &DigitallySignedStruct,
+-    ) -> Result<HandshakeSignatureValid, Error> {
+-        Ok(HandshakeSignatureValid::assertion())
++/// Encode ALPN protocols in the length-prefixed wire format BoringSSL expects.
++fn encode_alpn(protocols: &[Vec<u8>]) -> Vec<u8> {
++    let mut out = Vec::new();
++    for proto in protocols {
++        out.push(u8::try_from(proto.len()).unwrap_or(u8::MAX));
++        out.extend_from_slice(proto);
+     }
++    out
++}
+ 
+-    fn verify_tls13_signature(
+-        &self,
+-        _message: &[u8],
+-        _cert: &CertificateDer<'_>,
+-        _dss: &DigitallySignedStruct,
+-    ) -> Result<HandshakeSignatureValid, Error> {
+-        Ok(HandshakeSignatureValid::assertion())
++fn enable_keylog(builder: &mut SslConnectorBuilder) {
++    let Ok(path) = std::env::var("SSLKEYLOGFILE") else {
++        return;
++    };
++    builder.set_keylog_callback(move |_, line| {
++        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path)
++            && writeln!(file, "{line}").is_err()
++        {
++            // Best-effort; a full disk should not fail the handshake.
++        }
++    });
++}
++
++fn enable_keylog_acceptor(builder: &mut SslAcceptorBuilder) {
++    let Ok(path) = std::env::var("SSLKEYLOGFILE") else {
++        return;
++    };
++    builder.set_keylog_callback(move |_, line| {
++        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
++            let _ = writeln!(file, "{line}");
++        }
++    });
++}
++
++fn set_client_auth_cert(builder: &mut SslConnectorBuilder, certs: &[X509], key: &PKey<Private>) -> anyhow::Result<()> {
++    let (leaf, chain) = certs
++        .split_first()
++        .ok_or_else(|| anyhow!("mTLS client certificate chain is empty"))?;
++    builder.set_certificate(leaf)?;
++    for extra in chain {
++        builder.add_extra_chain_cert(extra.clone())?;
+     }
++    builder.set_private_key(key)?;
++    builder.check_private_key()?;
++    Ok(())
++}
+ 
+-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+-        vec![
+-            SignatureScheme::RSA_PKCS1_SHA1,
+-            SignatureScheme::ECDSA_SHA1_Legacy,
+-            SignatureScheme::RSA_PKCS1_SHA256,
+-            SignatureScheme::ECDSA_NISTP256_SHA256,
+-            SignatureScheme::RSA_PKCS1_SHA384,
+-            SignatureScheme::ECDSA_NISTP384_SHA384,
+-            SignatureScheme::RSA_PKCS1_SHA512,
+-            SignatureScheme::ECDSA_NISTP521_SHA512,
+-            SignatureScheme::RSA_PSS_SHA256,
+-            SignatureScheme::RSA_PSS_SHA384,
+-            SignatureScheme::RSA_PSS_SHA512,
+-            SignatureScheme::ED25519,
+-            SignatureScheme::ED448,
+-        ]
++fn set_server_cert(builder: &mut SslAcceptorBuilder, tls_cfg: &TlsServerConfig) -> anyhow::Result<()> {
++    let certs = tls_cfg.tls_certificate.lock();
++    let (leaf, chain) = certs
++        .split_first()
++        .ok_or_else(|| anyhow!("TLS certificate chain is empty"))?;
++    builder.set_certificate(leaf)?;
++    for extra in chain {
++        builder.add_extra_chain_cert(extra.clone())?;
+     }
++    builder.set_private_key(&tls_cfg.tls_key.lock())?;
++    builder.check_private_key()?;
++    Ok(())
+ }
+ 
+-pub fn load_certificates_from_pem(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
++pub fn load_certificates_from_pem(path: &Path) -> anyhow::Result<Vec<X509>> {
+     info!("Loading tls certificate from {:?}", path);
+-
+-    let file = File::open(path)?;
+-    let mut reader = BufReader::new(file);
+-    let certs = rustls_pemfile::certs(&mut reader);
+-
+-    Ok(certs
+-        .into_iter()
+-        .filter_map(|cert| match cert {
+-            Ok(cert) => Some(cert),
+-            Err(err) => {
+-                warn!("Error while parsing tls certificate: {err:?}");
+-                None
+-            }
+-        })
+-        .collect())
++    let pem = fs::read(path).with_context(|| format!("Cannot read TLS certificate {path:?}"))?;
++    let certs = X509::stack_from_pem(&pem).with_context(|| format!("Cannot parse TLS certificate {path:?}"))?;
++    if certs.is_empty() {
++        return Err(anyhow!("No certificate found in {path:?}"));
++    }
++    Ok(certs)
+ }
+ 
+-pub fn load_private_key_from_file(path: &Path) -> anyhow::Result<PrivateKeyDer<'static>> {
++pub fn load_private_key_from_file(path: &Path) -> anyhow::Result<PKey<Private>> {
+     info!("Loading tls private key from {:?}", path);
+-
+-    let file = File::open(path)?;
+-    let mut reader = BufReader::new(file);
+-
+-    let Some(private_key) = rustls_pemfile::private_key(&mut reader)? else {
+-        return Err(anyhow!("No private key found in {path:?}"));
+-    };
+-
+-    Ok(private_key)
++    let pem = fs::read(path).with_context(|| format!("Cannot read TLS private key {path:?}"))?;
++    PKey::private_key_from_pem(&pem).with_context(|| format!("Cannot parse TLS private key {path:?}"))
+ }
+ 
+ pub fn tls_connector(
+     tls_verify_certificate: bool,
+     alpn_protocols: Vec<Vec<u8>>,
+-    enable_sni: bool,
+-    ech_config: Option<EchConfig>,
+-    tls_client_certificate: Option<Vec<CertificateDer<'static>>>,
+-    tls_client_key: Option<PrivateKeyDer<'static>>,
+-) -> anyhow::Result<TlsConnector> {
+-    // Load system certificates
+-    let root_store = crate::tunnel::ca_reloader::get_root_store();
+-    let crypto_provider = rustls::crypto::CryptoProvider::get_default().unwrap().clone();
+-
+-    let config_builder = rustls::ClientConfig::builder_with_provider(crypto_provider);
+-    let config_builder = if let Some(ech_config) = ech_config {
+-        info!("Using TLS ECH (encrypted sni) with config: {:?}", ech_config);
+-        config_builder.with_ech(EchMode::Enable(ech_config))?
++    _enable_sni: bool,
++    tls_client_certificate: Option<Vec<X509>>,
++    tls_client_key: Option<PKey<Private>>,
++) -> anyhow::Result<SslConnector> {
++    let mut builder = SslConnector::builder(SslMethod::tls_client()).with_context(|| "Cannot create TLS connector")?;
++
++    if tls_verify_certificate {
++        builder.set_verify(SslVerifyMode::PEER);
++        if let Err(err) = builder.set_default_verify_paths() {
++            warn!("Cannot load default TLS CA paths: {err}");
++        }
+     } else {
+-        config_builder.with_safe_default_protocol_versions()?
+-    };
+-    let config_builder = config_builder.with_root_certificates(root_store);
+-
+-    let mut config = match (tls_client_certificate, tls_client_key) {
+-        (Some(tls_client_certificate), Some(tls_client_key)) => config_builder
+-            .with_client_auth_cert(tls_client_certificate, tls_client_key)
+-            .with_context(|| "Error setting up mTLS")?,
+-        _ => config_builder.with_no_client_auth(),
+-    };
++        builder.set_verify(SslVerifyMode::NONE);
++    }
+ 
+-    config.enable_sni = enable_sni;
+-    config.key_log = Arc::new(KeyLogFile::new());
++    if !alpn_protocols.is_empty() {
++        builder
++            .set_alpn_protos(&encode_alpn(&alpn_protocols))
++            .with_context(|| "Cannot set TLS ALPN protocols")?;
++    }
+ 
+-    // To bypass certificate verification
+-    if !tls_verify_certificate {
+-        config.dangerous().set_certificate_verifier(Arc::new(NullVerifier));
++    match (tls_client_certificate, tls_client_key) {
++        (Some(certs), Some(key)) => set_client_auth_cert(&mut builder, &certs, &key)?,
++        _ => {}
+     }
+ 
+-    config.alpn_protocols = alpn_protocols;
+-    let tls_connector = TlsConnector::from(Arc::new(config));
+-    Ok(tls_connector)
++    enable_keylog(&mut builder);
++    Ok(builder.build())
+ }
+ 
+-/// Build the mTLS client certificate verifier for a server config, or a no-op verifier when
+-/// the server is not configured to authenticate clients.
+-fn client_cert_verifier(tls_cfg: &TlsServerConfig) -> anyhow::Result<Arc<dyn ClientCertVerifier>> {
+-    let Some(tls_client_ca_certificates) = &tls_cfg.tls_client_ca_certificates else {
+-        return Ok(WebPkiClientVerifier::no_client_auth());
+-    };
++pub fn tls_acceptor(tls_cfg: &TlsServerConfig, alpn_protocols: Option<Vec<Vec<u8>>>) -> anyhow::Result<SslAcceptor> {
++    let mut builder =
++        SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server()).with_context(|| "Cannot create TLS acceptor")?;
+ 
+-    let mut root_store = RootCertStore::empty();
+-    for tls_client_ca_certificate in tls_client_ca_certificates.lock().iter() {
+-        root_store
+-            .add(tls_client_ca_certificate.clone())
+-            .with_context(|| "Failed to add mTLS client CA certificate")?;
++    set_server_cert(&mut builder, tls_cfg).with_context(|| "invalid tls certificate or private key")?;
++
++    if let Some(tls_client_ca_certificates) = &tls_cfg.tls_client_ca_certificates {
++        let mut store = X509StoreBuilder::new()?;
++        for ca in tls_client_ca_certificates.lock().iter() {
++            store
++                .add_cert(ca.clone())
++                .with_context(|| "Failed to add mTLS client CA certificate")?;
++        }
++        builder.set_verify_cert_store(store.build())?;
++        builder.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+     }
+ 
+-    WebPkiClientVerifier::builder(Arc::new(root_store))
+-        .build()
+-        .map_err(|err| anyhow!("Failed to build mTLS client verifier: {err:?}"))
++    if let Some(alpn_protocols) = alpn_protocols.filter(|p| !p.is_empty()) {
++        let offered = alpn_protocols;
++        builder.set_alpn_select_callback(move |_ssl, client| select_alpn_from_client(&offered, client));
++    }
++
++    enable_keylog_acceptor(&mut builder);
++    Ok(builder.build())
+ }
+ 
+-pub fn tls_acceptor(tls_cfg: &TlsServerConfig, alpn_protocols: Option<Vec<Vec<u8>>>) -> anyhow::Result<TlsAcceptor> {
+-    let client_cert_verifier = client_cert_verifier(tls_cfg)?;
++fn rustls_certs_from_x509(certs: &[X509]) -> anyhow::Result<Vec<CertificateDer<'static>>> {
++    certs
++        .iter()
++        .map(|cert| {
++            Ok(CertificateDer::from(
++                cert.to_der().with_context(|| "Cannot encode certificate as DER")?,
++            ))
++        })
++        .collect()
++}
+ 
+-    let mut config = rustls::ServerConfig::builder()
+-        .with_client_cert_verifier(client_cert_verifier)
+-        .with_single_cert(tls_cfg.tls_certificate.lock().clone(), tls_cfg.tls_key.lock().clone_key())
+-        .with_context(|| "invalid tls certificate or private key")?;
++fn rustls_key_from_pkey(key: &PKey<Private>) -> anyhow::Result<PrivateKeyDer<'static>> {
++    use rustls::pki_types::pem::PemObject;
+ 
+-    config.key_log = Arc::new(KeyLogFile::new());
+-    if let Some(alpn_protocols) = alpn_protocols {
+-        config.alpn_protocols = alpn_protocols;
+-    }
+-    Ok(TlsAcceptor::from(Arc::new(config)))
++    let pem = key
++        .private_key_to_pem_pkcs8()
++        .with_context(|| "Cannot encode private key as PKCS8 PEM")?;
++    PrivateKeyDer::from_pem_slice(&pem).with_context(|| "Cannot parse PKCS8 PEM private key")
+ }
+ 
+ /// TLS config for a QUIC/WebTransport **server**.
+ ///
+-/// QUIC mandates TLS 1.3 and negotiates the HTTP/3 ALPN, so this cannot reuse
+-/// [`tls_acceptor`]'s config, which allows TLS 1.2 and advertises `h2`/`http/1.1`. The mTLS
+-/// client verifier and certificate material are shared with the TCP path.
++/// QUIC still uses rustls (via quinn). Certificate material is converted from the BoringSSL
++/// objects used on the TCP path.
+ pub fn quic_server_config(tls_cfg: &TlsServerConfig) -> anyhow::Result<rustls::ServerConfig> {
+     let crypto_provider = rustls::crypto::CryptoProvider::get_default()
+         .ok_or_else(|| anyhow!("No default crypto provider installed for rustls"))?
+@@ -192,26 +214,43 @@ pub fn quic_server_config(tls_cfg: &TlsServerConfig) -> anyhow::Result<rustls::S
+     let mut config = rustls::ServerConfig::builder_with_provider(crypto_provider)
+         .with_protocol_versions(&[&rustls::version::TLS13])
+         .with_context(|| "QUIC requires TLS 1.3 support")?
+-        .with_client_cert_verifier(client_cert_verifier(tls_cfg)?)
+-        .with_single_cert(tls_cfg.tls_certificate.lock().clone(), tls_cfg.tls_key.lock().clone_key())
++        .with_client_cert_verifier(quic_client_cert_verifier(tls_cfg)?)
++        .with_single_cert(
++            rustls_certs_from_x509(&tls_cfg.tls_certificate.lock())?,
++            rustls_key_from_pkey(&tls_cfg.tls_key.lock())?,
++        )
+         .with_context(|| "invalid tls certificate or private key")?;
+ 
+     config.key_log = Arc::new(KeyLogFile::new());
+     config.alpn_protocols = vec![web_transport_quinn::ALPN.as_bytes().to_vec()];
+-
+     Ok(config)
+ }
+ 
++fn quic_client_cert_verifier(tls_cfg: &TlsServerConfig) -> anyhow::Result<Arc<dyn ClientCertVerifier>> {
++    let Some(tls_client_ca_certificates) = &tls_cfg.tls_client_ca_certificates else {
++        return Ok(WebPkiClientVerifier::no_client_auth());
++    };
++
++    let mut root_store = RootCertStore::empty();
++    for cert in rustls_certs_from_x509(&tls_client_ca_certificates.lock())? {
++        root_store
++            .add(cert)
++            .with_context(|| "Failed to add mTLS client CA certificate")?;
++    }
++
++    WebPkiClientVerifier::builder(Arc::new(root_store))
++        .build()
++        .map_err(|err| anyhow!("Failed to build mTLS client verifier: {err:?}"))
++}
++
+ /// TLS config for a QUIC/WebTransport **client**.
+ ///
+-/// Mirrors [`tls_connector`] — same root store, same mTLS client certificate handling, same
+-/// opt-out of certificate verification — but restricted to TLS 1.3 with the HTTP/3 ALPN.
+-///
+-/// ECH is not plumbed here: it is only wired for the TCP transports.
++/// ECH is not plumbed here: it is only wired for the TCP transports, and BoringSSL does not
++/// expose the rustls ECH API.
+ pub fn quic_client_config(
+     tls_verify_certificate: bool,
+-    tls_client_certificate: Option<Vec<CertificateDer<'static>>>,
+-    tls_client_key: Option<PrivateKeyDer<'static>>,
++    tls_client_certificate: Option<Vec<X509>>,
++    tls_client_key: Option<PKey<Private>>,
+ ) -> anyhow::Result<rustls::ClientConfig> {
+     let root_store = crate::tunnel::ca_reloader::get_root_store();
+     let crypto_provider = rustls::crypto::CryptoProvider::get_default()
+@@ -224,31 +263,77 @@ pub fn quic_client_config(
+         .with_root_certificates(root_store);
+ 
+     let mut config = match (tls_client_certificate, tls_client_key) {
+-        (Some(tls_client_certificate), Some(tls_client_key)) => config_builder
+-            .with_client_auth_cert(tls_client_certificate, tls_client_key)
++        (Some(certs), Some(key)) => config_builder
++            .with_client_auth_cert(rustls_certs_from_x509(&certs)?, rustls_key_from_pkey(&key)?)
+             .with_context(|| "Error setting up mTLS")?,
+         _ => config_builder.with_no_client_auth(),
+     };
+ 
+     config.key_log = Arc::new(KeyLogFile::new());
+-
+-    // To bypass certificate verification
+     if !tls_verify_certificate {
+         config.dangerous().set_certificate_verifier(Arc::new(NullVerifier));
+     }
+-
+     config.alpn_protocols = vec![web_transport_quinn::ALPN.as_bytes().to_vec()];
+-
+     Ok(config)
+ }
+ 
+-pub async fn connect(client_cfg: &ClientConfig, tcp_stream: TcpStream) -> anyhow::Result<TlsStream<TcpStream>> {
++#[derive(Debug)]
++struct NullVerifier;
++
++impl ServerCertVerifier for NullVerifier {
++    fn verify_server_cert(
++        &self,
++        _end_entity: &CertificateDer<'_>,
++        _intermediates: &[CertificateDer<'_>],
++        _server_name: &ServerName<'_>,
++        _ocsp_response: &[u8],
++        _now: UnixTime,
++    ) -> Result<ServerCertVerified, Error> {
++        Ok(ServerCertVerified::assertion())
++    }
++
++    fn verify_tls12_signature(
++        &self,
++        _message: &[u8],
++        _cert: &CertificateDer<'_>,
++        _dss: &DigitallySignedStruct,
++    ) -> Result<HandshakeSignatureValid, Error> {
++        Ok(HandshakeSignatureValid::assertion())
++    }
++
++    fn verify_tls13_signature(
++        &self,
++        _message: &[u8],
++        _cert: &CertificateDer<'_>,
++        _dss: &DigitallySignedStruct,
++    ) -> Result<HandshakeSignatureValid, Error> {
++        Ok(HandshakeSignatureValid::assertion())
++    }
++
++    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
++        vec![
++            SignatureScheme::RSA_PKCS1_SHA1,
++            SignatureScheme::ECDSA_SHA1_Legacy,
++            SignatureScheme::RSA_PKCS1_SHA256,
++            SignatureScheme::ECDSA_NISTP256_SHA256,
++            SignatureScheme::RSA_PKCS1_SHA384,
++            SignatureScheme::ECDSA_NISTP384_SHA384,
++            SignatureScheme::RSA_PKCS1_SHA512,
++            SignatureScheme::ECDSA_NISTP521_SHA512,
++            SignatureScheme::RSA_PSS_SHA256,
++            SignatureScheme::RSA_PSS_SHA384,
++            SignatureScheme::RSA_PSS_SHA512,
++            SignatureScheme::ED25519,
++            SignatureScheme::ED448,
++        ]
++    }
++}
++
++pub async fn connect(client_cfg: &ClientConfig, tcp_stream: TcpStream) -> anyhow::Result<SslStream<TcpStream>> {
+     let sni = client_cfg.tls_server_name();
+     let tls_config = match &client_cfg.remote_addr {
+         TransportAddr::Wss { tls, .. } => tls,
+         TransportAddr::Https { tls, .. } => tls,
+-        // WebTransport does its own TLS 1.3 handshake inside QUIC, over UDP. It never goes
+-        // through the TCP connection pool, so it must not reach this function.
+         TransportAddr::WebTransport { .. } => {
+             return Err(anyhow!(
+                 "WebTransport does not use a TCP TLS stream, it handshakes inside QUIC: {}",
+@@ -268,14 +353,23 @@ pub async fn connect(client_cfg: &ClientConfig, tcp_stream: TcpStream) -> anyhow
+         );
+     } else {
+         info!(
+-            "Doing TLS handshake using SNI {sni:?} with the server {}:{}",
++            "Doing TLS handshake using SNI {sni} with the server {}:{}",
+             client_cfg.remote_addr.host(),
+             client_cfg.remote_addr.port()
+         );
+     }
+ 
+-    let tls_connector = tls_config.tls_connector();
+-    let tls_stream = tls_connector.connect(sni, tcp_stream).await?;
++    let connector = tls_config.tls_connector();
++    let mut config = connector
++        .configure()
++        .with_context(|| "Cannot configure TLS connector")?;
++    if tls_config.tls_sni_disabled {
++        config.set_use_server_name_indication(false);
++        config.set_verify_hostname(false);
++    }
++    let tls_stream = tokio_boring::connect(config, &sni, tcp_stream)
++        .await
++        .map_err(|err| anyhow!("TLS handshake failed: {err}"))?;
+ 
+     Ok(tls_stream)
+ }
+--- a/wstunnel/src/protocols/tls/utils.rs
++++ b/wstunnel/src/protocols/tls/utils.rs
+@@ -1,9 +1,10 @@
+-use tokio_rustls::rustls::pki_types::CertificateDer;
++use boring::x509::X509;
++use rustls::pki_types::CertificateDer;
+ use x509_parser::parse_x509_certificate;
+ use x509_parser::prelude::X509Certificate;
+ 
+-/// Find a leaf certificate in a vector of certificates. It is assumed only a single leaf certificate
+-/// is present in the vector. The other certificates should be (intermediate) CA certificates.
++/// Find a leaf certificate in a vector of rustls DER certificates. It is assumed only a single
++/// leaf certificate is present. The other certificates should be (intermediate) CA certificates.
+ pub fn find_leaf_certificate<'a>(tls_certificates: &'a [CertificateDer<'static>]) -> Option<X509Certificate<'a>> {
+     for tls_certificate in tls_certificates {
+         if let Ok((_, tls_certificate_x509)) = parse_x509_certificate(tls_certificate)
+@@ -15,6 +16,26 @@ pub fn find_leaf_certificate<'a>(tls_certificates: &'a [CertificateDer<'static>]
+     None
+ }
+ 
++/// Common name of the first leaf certificate in a BoringSSL certificate chain.
++pub fn find_leaf_cn_from_x509(certs: &[X509]) -> Option<String> {
++    for cert in certs {
++        let der = cert.to_der().ok()?;
++        if let Ok((_, parsed)) = parse_x509_certificate(&der)
++            && !parsed.is_ca()
++        {
++            return cn_from_certificate(&parsed);
++        }
++    }
++    None
++}
++
++/// Common name of a single BoringSSL certificate.
++pub fn cn_from_x509(cert: &X509) -> Option<String> {
++    let der = cert.to_der().ok()?;
++    let (_, parsed) = parse_x509_certificate(&der).ok()?;
++    cn_from_certificate(&parsed)
++}
++
+ /// Returns the common name (CN) as specified in the supplied certificate.
+ pub fn cn_from_certificate(tls_certificate_x509: &X509Certificate) -> Option<String> {
+     tls_certificate_x509
+--- a/wstunnel/src/test_integrations.rs
++++ b/wstunnel/src/test_integrations.rs
+@@ -61,9 +61,9 @@ fn dns_resolver() -> DnsResolver {
+     // Whichever provider the crate was built with, as only one of the two is compiled in.
+     // Installing twice is expected across fixtures, hence the ignored result.
+     #[cfg(feature = "aws-lc-rs")]
+-    let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
++    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+     #[cfg(all(feature = "ring", not(feature = "aws-lc-rs")))]
+-    let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
++    let _ = rustls::crypto::ring::default_provider().install_default();
+ 
+     DnsResolver::new_from_urls(&[], None, SoMark::new(None), true).expect("Cannot create DNS resolver")
+ }
+@@ -98,7 +98,7 @@ fn server_webtransport(dns_resolver: DnsResolver) -> Server {
+         websocket_mask_frame: false,
+         tls: Some(TlsServerConfig {
+             tls_certificate: parking_lot::Mutex::new(embedded_certificate::TLS_CERTIFICATE.0.clone()),
+-            tls_key: parking_lot::Mutex::new(embedded_certificate::TLS_CERTIFICATE.1.clone_key()),
++            tls_key: parking_lot::Mutex::new(embedded_certificate::TLS_CERTIFICATE.1.clone()),
+             tls_client_ca_certificates: None,
+             tls_certificate_path: None,
+             tls_key_path: None,
+@@ -118,8 +118,7 @@ fn server_webtransport(dns_resolver: DnsResolver) -> Server {
+ async fn client_webtransport(server_port: u16, dns_resolver: DnsResolver) -> Client {
+     // The embedded certificate is self-signed with no SAN, so verification must be off.
+     let tls_connector =
+-        crate::protocols::tls::tls_connector(false, TransportScheme::Wts.alpn_protocols(), true, None, None, None)
+-            .unwrap();
++        crate::protocols::tls::tls_connector(false, TransportScheme::Wts.alpn_protocols(), true, None, None).unwrap();
+     let tls = TlsClientConfig {
+         tls_sni_disabled: false,
+         tls_sni_override: None,
+--- a/wstunnel/src/tunnel/ca_reloader.rs
++++ b/wstunnel/src/tunnel/ca_reloader.rs
+@@ -1,7 +1,7 @@
+ use arc_swap::ArcSwap;
++use rustls::RootCertStore;
+ use std::sync::{Arc, LazyLock};
+ use std::time::Duration;
+-use tokio_rustls::rustls::RootCertStore;
+ use tracing::{debug, warn};
+ 
+ // Global thread-safe store for system CA certificates
+@@ -41,17 +41,14 @@ impl SystemCaReloader {
+     fn init_crypto_provider() {
+         #[cfg(feature = "aws-lc-rs")]
+         {
+-            if tokio_rustls::rustls::crypto::aws_lc_rs::default_provider()
+-                .install_default()
+-                .is_err()
+-            {
++            if rustls::crypto::aws_lc_rs::default_provider().install_default().is_err() {
+                 #[cfg(feature = "ring")]
+-                let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
++                let _ = rustls::crypto::ring::default_provider().install_default();
+             }
+         }
+         #[cfg(all(not(feature = "aws-lc-rs"), feature = "ring"))]
+         {
+-            let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
++            let _ = rustls::crypto::ring::default_provider().install_default();
+         }
+     }
+ 
+--- a/wstunnel/src/tunnel/client/config.rs
++++ b/wstunnel/src/tunnel/client/config.rs
+@@ -1,16 +1,14 @@
+ use crate::protocols::dns::DnsResolver;
++use crate::protocols::tls::TlsConnector;
+ use crate::somark::SoMark;
+ use crate::tunnel::transport::TransportAddr;
+ use crate::tunnel::transport::webtransport::WebTransportEndpoint;
+ use hyper::header::{HeaderName, HeaderValue};
+ use parking_lot::RwLock;
+ use std::collections::HashMap;
+-use std::net::IpAddr;
+ use std::path::PathBuf;
+-use std::sync::{Arc, LazyLock};
++use std::sync::Arc;
+ use std::time::Duration;
+-use tokio_rustls::TlsConnector;
+-use tokio_rustls::rustls::pki_types::{DnsName, ServerName};
+ use url::{Host, Url};
+ 
+ #[derive(Clone, Debug)]
+@@ -44,33 +42,26 @@ impl ClientConfig {
+                     Host::Ipv4(ip) => ip.to_string(),
+                     Host::Ipv6(ip) => ip.to_string(),
+                 },
+-                |sni_override| sni_override.as_ref().to_string(),
++                |sni_override| sni_override.clone(),
+             )
+     }
+-    pub fn tls_server_name(&self) -> ServerName<'static> {
+-        static INVALID_DNS_NAME: LazyLock<DnsName> =
+-            LazyLock::new(|| DnsName::try_from("dns-name-invalid.com").unwrap());
+-
++    pub fn tls_server_name(&self) -> String {
+         self.remote_addr
+             .tls()
+             .and_then(|tls| tls.tls_sni_override.as_ref())
+-            .map_or_else(
+-                || match &self.remote_addr.host() {
+-                    Host::Domain(domain) => ServerName::DnsName(
+-                        DnsName::try_from(domain.clone()).unwrap_or_else(|_| INVALID_DNS_NAME.clone()),
+-                    ),
+-                    Host::Ipv4(ip) => ServerName::IpAddress(IpAddr::V4(*ip).into()),
+-                    Host::Ipv6(ip) => ServerName::IpAddress(IpAddr::V6(*ip).into()),
+-                },
+-                |sni_override| ServerName::DnsName(sni_override.clone()),
+-            )
++            .cloned()
++            .unwrap_or_else(|| match &self.remote_addr.host() {
++                Host::Domain(domain) => domain.clone(),
++                Host::Ipv4(ip) => ip.to_string(),
++                Host::Ipv6(ip) => ip.to_string(),
++            })
+     }
+ }
+ 
+ #[derive(Clone)]
+ pub struct TlsClientConfig {
+     pub tls_sni_disabled: bool,
+-    pub tls_sni_override: Option<DnsName<'static>>,
++    pub tls_sni_override: Option<String>,
+     pub tls_verify_certificate: bool,
+     pub tls_connector: Arc<RwLock<TlsConnector>>,
+     pub tls_certificate_path: Option<PathBuf>,
+--- a/wstunnel/src/tunnel/client/connection_pool/l4_stream.rs
++++ b/wstunnel/src/tunnel/client/connection_pool/l4_stream.rs
+@@ -23,7 +23,7 @@ impl L4Stream {
+         }
+     }
+ 
+-    pub fn from_client_tls(tls: tokio_rustls::client::TlsStream<TcpStream>, read_buf: Bytes) -> Self {
++    pub fn from_client_tls(tls: tokio_boring::SslStream<TcpStream>, read_buf: Bytes) -> Self {
+         let (read, write) = tokio::io::split(tls);
+         Self {
+             read: L4ReadHalf::Tls(read, read_buf),
+@@ -31,12 +31,8 @@ impl L4Stream {
+         }
+     }
+ 
+-    pub fn from_server_tls(tls: tokio_rustls::server::TlsStream<TcpStream>, read_buf: Bytes) -> Self {
+-        let (read, write) = tokio::io::split(tls);
+-        Self {
+-            read: L4ReadHalf::TlsSrv(read, read_buf),
+-            write: L4WriteHalf::TlsSrv(write),
+-        }
++    pub fn from_server_tls(tls: tokio_boring::SslStream<TcpStream>, read_buf: Bytes) -> Self {
++        Self::from_client_tls(tls, read_buf)
+     }
+ 
+     pub fn from(self, read_buf: Bytes) -> Self {
+@@ -55,8 +51,7 @@ impl L4Stream {
+ 
+ pub enum L4ReadHalf {
+     Plain(OwnedReadHalf, Bytes),
+-    Tls(ReadHalf<tokio_rustls::client::TlsStream<TcpStream>>, Bytes),
+-    TlsSrv(ReadHalf<tokio_rustls::server::TlsStream<TcpStream>>, Bytes),
++    Tls(ReadHalf<tokio_boring::SslStream<TcpStream>>, Bytes),
+ }
+ 
+ impl L4ReadHalf {
+@@ -64,15 +59,13 @@ impl L4ReadHalf {
+         match self {
+             Self::Plain(_, buf) => buf,
+             Self::Tls(_, buf) => buf,
+-            Self::TlsSrv(_, buf) => buf,
+         }
+     }
+ }
+ 
+ pub enum L4WriteHalf {
+     Plain(OwnedWriteHalf),
+-    Tls(WriteHalf<tokio_rustls::client::TlsStream<TcpStream>>),
+-    TlsSrv(WriteHalf<tokio_rustls::server::TlsStream<TcpStream>>),
++    Tls(WriteHalf<tokio_boring::SslStream<TcpStream>>),
+ }
+ 
+ impl AsyncRead for L4Stream {
+@@ -132,7 +125,6 @@ impl AsyncRead for L4ReadHalf {
+         match this {
+             Self::Plain(cnx, _) => Pin::new(cnx).poll_read(cx, buf),
+             Self::Tls(cnx, _) => Pin::new(cnx).poll_read(cx, buf),
+-            Self::TlsSrv(cnx, _) => Pin::new(cnx).poll_read(cx, buf),
+         }
+     }
+ }
+@@ -143,7 +135,6 @@ impl AsyncWrite for L4WriteHalf {
+         match self.get_mut() {
+             Self::Plain(cnx) => Pin::new(cnx).poll_write(cx, buf),
+             Self::Tls(cnx) => Pin::new(cnx).poll_write(cx, buf),
+-            Self::TlsSrv(cnx) => Pin::new(cnx).poll_write(cx, buf),
+         }
+     }
+ 
+@@ -152,7 +143,6 @@ impl AsyncWrite for L4WriteHalf {
+         match self.get_mut() {
+             Self::Plain(cnx) => Pin::new(cnx).poll_flush(cx),
+             Self::Tls(cnx) => Pin::new(cnx).poll_flush(cx),
+-            Self::TlsSrv(cnx) => Pin::new(cnx).poll_flush(cx),
+         }
+     }
+ 
+@@ -161,7 +151,6 @@ impl AsyncWrite for L4WriteHalf {
+         match self.get_mut() {
+             Self::Plain(cnx) => Pin::new(cnx).poll_shutdown(cx),
+             Self::Tls(cnx) => Pin::new(cnx).poll_shutdown(cx),
+-            Self::TlsSrv(cnx) => Pin::new(cnx).poll_shutdown(cx),
+         }
+     }
+ 
+@@ -174,7 +163,6 @@ impl AsyncWrite for L4WriteHalf {
+         match self.get_mut() {
+             Self::Plain(cnx) => Pin::new(cnx).poll_write_vectored(cx, bufs),
+             Self::Tls(cnx) => Pin::new(cnx).poll_write_vectored(cx, bufs),
+-            Self::TlsSrv(cnx) => Pin::new(cnx).poll_write_vectored(cx, bufs),
+         }
+     }
+ 
+@@ -183,7 +171,6 @@ impl AsyncWrite for L4WriteHalf {
+         match &self {
+             Self::Plain(cnx) => cnx.is_write_vectored(),
+             Self::Tls(cnx) => cnx.is_write_vectored(),
+-            Self::TlsSrv(cnx) => cnx.is_write_vectored(),
+         }
+     }
+ }
+--- a/wstunnel/src/tunnel/server/handler_webtransport.rs
++++ b/wstunnel/src/tunnel/server/handler_webtransport.rs
+@@ -15,11 +15,11 @@ use anyhow::{Context, anyhow};
+ use arc_swap::ArcSwap;
+ use hyper::header::{AUTHORIZATION, COOKIE, HeaderValue};
+ use hyper::{Request, StatusCode};
++use rustls::pki_types::CertificateDer;
+ use std::any::Any;
+ use std::net::SocketAddr;
+ use std::sync::Arc;
+ use tokio::sync::oneshot;
+-use tokio_rustls::rustls::pki_types::CertificateDer;
+ use tracing::{Instrument, Level, Span, debug, error, info, span, warn};
+ use uuid::Uuid;
+ use web_transport_quinn::quinn;
+--- a/wstunnel/src/tunnel/server/server.rs
++++ b/wstunnel/src/tunnel/server/server.rs
+@@ -1,7 +1,7 @@
+ use crate::executor::DefaultTokioExecutor;
+ use crate::protocols;
+ use crate::protocols::dns::DnsResolver;
+-use crate::protocols::tls;
++use crate::protocols::tls::{self, Certificate, PrivateKey, TlsAcceptor};
+ use crate::restrictions::config_reloader::RestrictionsRulesReloader;
+ use crate::restrictions::types::{RestrictionConfig, RestrictionsRules};
+ use crate::somark::SoMark;
+@@ -42,16 +42,14 @@ use std::sync::{Arc, LazyLock};
+ use std::time::Duration;
+ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+ use tokio::net::TcpListener;
+-use tokio_rustls::TlsAcceptor;
+-use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+ use tracing::{Instrument, Level, Span, error, info, span, warn};
+ use url::{Host, Url};
+ 
+ #[derive(Debug)]
+ pub struct TlsServerConfig {
+-    pub tls_certificate: Mutex<Vec<CertificateDer<'static>>>,
+-    pub tls_key: Mutex<PrivateKeyDer<'static>>,
+-    pub tls_client_ca_certificates: Option<Mutex<Vec<CertificateDer<'static>>>>,
++    pub tls_certificate: Mutex<Vec<Certificate>>,
++    pub tls_key: Mutex<PrivateKey>,
++    pub tls_client_ca_certificates: Option<Mutex<Vec<Certificate>>>,
+     pub tls_certificate_path: Option<PathBuf>,
+     pub tls_key_path: Option<PathBuf>,
+     pub tls_client_ca_certs_path: Option<PathBuf>,
+@@ -543,7 +541,7 @@ impl<E: crate::TokioExecutorRef> Server<E> {
+                     let tls_acceptor = tls.tls_acceptor().clone();
+                     let fut = async move {
+                         info!("Doing TLS handshake");
+-                        let tls_stream = match tls_acceptor.accept(stream).await {
++                        let tls_stream = match tokio_boring::accept(&tls_acceptor, stream).await {
+                             Ok(tls_stream) => hyper_util::rt::TokioIo::new(tls_stream),
+                             Err(err) => {
+                                 error!("error while accepting TLS connection {}", err);
+@@ -551,13 +549,10 @@ impl<E: crate::TokioExecutorRef> Server<E> {
+                             }
+                         };
+ 
+-                        let tls_ctx = tls_stream.inner().get_ref().1;
++                        let ssl = tls_stream.inner().ssl();
+                         // extract client certificate common name if any
+-                        let restrict_path = tls_ctx
+-                            .peer_certificates()
+-                            .and_then(tls::find_leaf_certificate)
+-                            .and_then(|c| tls::cn_from_certificate(&c));
+-                        match tls_ctx.alpn_protocol() {
++                        let restrict_path = ssl.peer_certificate().and_then(|c| tls::cn_from_x509(&c));
++                        match ssl.selected_alpn_protocol() {
+                             // http2
+                             Some(b"h2") => {
+                                 let mut conn_builder = http2::Builder::new(TokioExecutor::new());
+--- a/wstunnel/src/tunnel/tls_reloader.rs
++++ b/wstunnel/src/tunnel/tls_reloader.rs
+@@ -143,7 +143,6 @@ impl TlsReloaderClientState {
+             tls.tls_verify_certificate,
+             self.client_config.remote_addr.scheme().alpn_protocols(),
+             !tls.tls_sni_disabled,
+-            None,
+             Some(tls_certs),
+             Some(tls_key),
+         )?;
+--- a/wstunnel/src/tunnel/transport/websocket.rs
++++ b/wstunnel/src/tunnel/transport/websocket.rs
+@@ -27,7 +27,7 @@ use tokio::net::TcpStream;
+ use tokio::sync::Notify;
+ use tokio::sync::mpsc::error::TrySendError;
+ use tokio::sync::mpsc::{Receiver, Sender};
+-use tokio_rustls::server::TlsStream;
++use tokio_boring::SslStream;
+ use tracing::trace;
+ use uuid::Uuid;
+ 
+@@ -75,7 +75,7 @@ impl TransportWrite for WebsocketTransportWrite {
+ 
+         // It is needed to call poll_flush to ensure that the data is written to the underlying stream.
+         // In case of a TLS stream, it may still be buffered in the TLS layer if not flushed.
+-        // https://docs.rs/tokio-rustls/latest/tokio_rustls/#why-do-i-need-to-call-poll_flush
++        // TLS streams may still buffer application data until flushed.
+         if let Err(err) = self.inner.flush().await {
+             return Err(io::Error::new(ErrorKind::ConnectionAborted, err));
+         }
+@@ -345,7 +345,7 @@ pub fn mk_websocket_tunnel(
+         }
+         Role::Server => {
+             let upgraded = ws.into_inner().into_inner();
+-            match upgraded.downcast::<TokioIo<TlsStream<TcpStream>>>() {
++            match upgraded.downcast::<TokioIo<SslStream<TcpStream>>>() {
+                 Ok(stream) => {
+                     let transport = L4Stream::from_server_tls(stream.io.into_inner(), stream.read_buf);
+                     WebSocket::after_handshake(transport, role)
+--- a/wstunnel/src/tunnel/transport/webtransport/endpoint.rs
++++ b/wstunnel/src/tunnel/transport/webtransport/endpoint.rs
+@@ -23,7 +23,7 @@ pub struct WebTransportEndpoint {
+ 
+ impl WebTransportEndpoint {
+     pub fn new(
+-        tls_config: tokio_rustls::rustls::ClientConfig,
++        tls_config: rustls::ClientConfig,
+         so_mark: SoMark,
+         keep_alive_interval: Option<Duration>,
+     ) -> anyhow::Result<Self> {

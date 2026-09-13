@@ -1,0 +1,63 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+USE_PROCD=1
+
+PROG=/usr/bin/wstunnel
+
+append_extra_args() {
+	procd_append_param command "$1"
+}
+
+start_instance() {
+	local cfg="$1"
+	local mode="$2"
+	local enabled server redirect listen extra_args
+
+	config_get_bool enabled "$cfg" enabled 0
+	[ "$enabled" -eq 0 ] && return
+
+	procd_open_instance "$cfg"
+	procd_set_param command "$PROG" "$mode" --no-color
+
+	if [ "$mode" = "client" ]; then
+		config_get server "$cfg" server
+		config_get redirect "$cfg" redirect
+
+		if [ -z "$redirect" ] || [ -z "$server" ]; then
+			echo "wstunnel client error ($cfg): both 'option redirect' and 'option server' are required"
+			return 1
+		fi
+		procd_append_param command -L "$redirect" "$server"
+
+	elif [ "$mode" = "server" ]; then
+		config_get listen "$cfg" listen
+		config_get redirect "$cfg" redirect
+
+		if [ -z "$listen" ]; then
+			echo "wstunnel server error ($cfg): 'option listen' is required"
+			return 1
+		fi
+
+		# If redirect is provided, lock down the server. If missing, it acts as an open proxy.
+		if [ -n "$redirect" ]; then
+			procd_append_param command --restrict-to "$redirect"
+		fi
+
+		procd_append_param command "$listen"
+	fi
+
+	config_list_foreach "$cfg" extra_args append_extra_args
+
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
+
+	procd_close_instance
+}
+
+start_service() {
+	config_load wstunnel
+	config_foreach start_instance client client
+	config_foreach start_instance server server
+}

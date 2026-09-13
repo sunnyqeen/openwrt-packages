@@ -1,0 +1,597 @@
+From 7e46aa0826fefab3c5bf5193cdcee393575d663a Mon Sep 17 00:00:00 2001
+From: Jimmy Qin <sunnyqeen@gmail.com>
+Date: Sat, 12 Sep 2026 12:42:00 +0200
+Subject: Make wss/https ClientHello match Chrome, and send a Chrome User-Agent
+ only when -H or WSTUNNEL_HTTP_HEADERS is set.
+
+
+--- a/wstunnel/src/config.rs
++++ b/wstunnel/src/config.rs
+@@ -7,6 +7,16 @@ use url::{Host, Url};
+ 
+ pub const DEFAULT_CLIENT_UPGRADE_PATH_PREFIX: &str = "v1";
+ 
++/// Desktop Chrome User-Agent. Sent only when `-H` is used and no User-Agent is given.
++#[cfg(windows)]
++pub const CHROME_USER_AGENT: &str =
++    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
++#[cfg(target_os = "macos")]
++pub const CHROME_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
++#[cfg(not(any(windows, target_os = "macos")))]
++pub const CHROME_USER_AGENT: &str =
++    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
++
+ #[derive(Clone, Debug)]
+ #[cfg_attr(feature = "clap", derive(clap::Args))]
+ pub struct ClientCreationRequest {
+@@ -181,9 +191,20 @@ pub struct ClientCreationRequest {
+     #[cfg_attr(feature = "clap", arg(long, default_value = "false", verbatim_doc_comment))]
+     pub websocket_mask_frame: bool,
+ 
+-    /// Send custom headers in the upgrade request
+-    /// Can be specified multiple time
+-    #[cfg_attr(feature = "clap", arg(short='H', long, value_name = "HEADER_NAME: HEADER_VALUE", value_parser = parsers::parse_http_headers, verbatim_doc_comment))]
++    /// Send custom headers in the upgrade request.
++    /// Can be specified multiple times.
++    /// Bare `-H` or `WSTUNNEL_HTTP_HEADERS=` (no value) sends a Chrome User-Agent.
++    /// Any `-H` / env value without a User-Agent also gets that default. No `-H` and no env: no User-Agent.
++    #[cfg_attr(feature = "clap", arg(
++        short = 'H',
++        long,
++        value_name = "HEADER_NAME: HEADER_VALUE",
++        num_args = 0..=1,
++        default_missing_value = "",
++        env = "WSTUNNEL_HTTP_HEADERS",
++        value_parser = parsers::parse_http_headers,
++        verbatim_doc_comment
++    ))]
+     pub http_headers: Vec<(HeaderName, HeaderValue)>,
+ 
+     /// Send custom headers in the upgrade request reading them from a file.
+@@ -446,10 +467,11 @@ pub struct LocalToRemote {
+ 
+ #[cfg(feature = "clap")]
+ mod parsers {
+-    use super::LocalToRemote;
++    use super::{CHROME_USER_AGENT, LocalToRemote};
+     use crate::tunnel::LocalProtocol;
+     use crate::tunnel::transport::TransportScheme;
+     use base64::Engine;
++    use hyper::header::USER_AGENT;
+     use hyper::http::{HeaderName, HeaderValue};
+     use std::cmp::max;
+     use std::collections::BTreeMap;
+@@ -726,6 +748,10 @@ mod parsers {
+     }
+ 
+     pub fn parse_http_headers(arg: &str) -> Result<(HeaderName, HeaderValue), io::Error> {
++        if arg.trim().is_empty() {
++            return Ok((USER_AGENT, HeaderValue::from_static(CHROME_USER_AGENT)));
++        }
++
+         let Some((key, value)) = arg.split_once(':') else {
+             return Err(io::Error::new(
+                 ErrorKind::InvalidInput,
+--- a/wstunnel/src/lib.rs
++++ b/wstunnel/src/lib.rs
+@@ -8,7 +8,9 @@ mod somark;
+ mod test_integrations;
+ pub mod tunnel;
+ 
+-use crate::config::{ClientCreationRequest, DEFAULT_CLIENT_UPGRADE_PATH_PREFIX, ServerCreationRequest};
++use crate::config::{
++    CHROME_USER_AGENT, ClientCreationRequest, DEFAULT_CLIENT_UPGRADE_PATH_PREFIX, ServerCreationRequest,
++};
+ use crate::executor::{TokioExecutor, TokioExecutorRef};
+ use crate::protocols::dns::DnsResolver;
+ use crate::protocols::tls;
+@@ -28,10 +30,11 @@ use crate::tunnel::upstream_connectors::{Socks5UpstreamConnector, TcpUpstreamCon
+ use crate::tunnel::{RemoteAddr, to_host_port};
+ use anyhow::{Context, anyhow};
+ use futures_util::future::BoxFuture;
+-use hyper::header::HOST;
++use hyper::header::{HOST, USER_AGENT};
+ use hyper::http::HeaderValue;
+ use log::debug;
+ use parking_lot::{Mutex, RwLock};
++use std::collections::HashMap;
+ use std::str::FromStr;
+ use std::sync::Arc;
+ use std::time::Duration;
+@@ -207,7 +210,16 @@ pub async fn create_client(
+         socket_so_mark: SoMark::new(args.socket_so_mark),
+         http_upgrade_path_prefix,
+         http_upgrade_credentials: args.http_upgrade_credentials,
+-        http_headers: args.http_headers.into_iter().filter(|(k, _)| k != HOST).collect(),
++        http_headers: {
++            let mut headers: HashMap<_, _> = args.http_headers.into_iter().filter(|(k, _)| k != HOST).collect();
++            // Chrome UA only when `-H` or WSTUNNEL_HTTP_HEADERS is set; bare/empty uses the default.
++            if !headers.contains_key(&USER_AGENT)
++                && (!headers.is_empty() || std::env::var_os("WSTUNNEL_HTTP_HEADERS").is_some())
++            {
++                headers.insert(USER_AGENT, HeaderValue::from_static(CHROME_USER_AGENT));
++            }
++            headers
++        },
+         http_headers_file: args.http_headers_file,
+         http_header_host: host_header,
+         timeout_connect: Duration::from_secs(10),
+--- a/wstunnel/src/protocols/tls/server.rs
++++ b/wstunnel/src/protocols/tls/server.rs
+@@ -1,7 +1,7 @@
+ use anyhow::{Context, anyhow};
+ use boring::pkey::{PKey, Private};
+ use boring::ssl::{
+-    AlpnError, SslAcceptor, SslAcceptorBuilder, SslConnector, SslConnectorBuilder, SslMethod, SslVerifyMode,
++    AlpnError, SslAcceptor, SslAcceptorBuilder, SslConnector, SslConnectorBuilder, SslMethod, SslVerifyMode, SslVersion,
+ };
+ use boring::x509::X509;
+ use boring::x509::store::X509StoreBuilder;
+@@ -77,6 +77,62 @@ fn system_ca_verify_store() -> anyhow::Result<Option<boring::x509::store::X509St
+     Ok(Some(store.build()))
+ }
+ 
++/// Chrome's TLS 1.2 cipher list (order matters). TLS 1.3 suites stay on BoringSSL's default,
++/// which matches Chrome: AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305.
++const CHROME_CIPHER_LIST: &str = "\
++ECDHE-ECDSA-AES128-GCM-SHA256:\
++ECDHE-RSA-AES128-GCM-SHA256:\
++ECDHE-ECDSA-AES256-GCM-SHA384:\
++ECDHE-RSA-AES256-GCM-SHA384:\
++ECDHE-ECDSA-CHACHA20-POLY1305:\
++ECDHE-RSA-CHACHA20-POLY1305:\
++ECDHE-RSA-AES128-SHA:\
++ECDHE-RSA-AES256-SHA:\
++AES128-GCM-SHA256:\
++AES256-GCM-SHA384:\
++AES128-SHA:\
++AES256-SHA";
++
++/// Chrome signature_algorithms (no Ed25519).
++const CHROME_SIGALGS: &str = "\
++ecdsa_secp256r1_sha256:\
++rsa_pss_rsae_sha256:\
++rsa_pkcs1_sha256:\
++ecdsa_secp384r1_sha384:\
++rsa_pss_rsae_sha384:\
++rsa_pkcs1_sha384:\
++rsa_pss_rsae_sha512:\
++rsa_pkcs1_sha512";
++
++const CHROME_GROUPS: &str = "X25519MLKEM768:X25519:P-256:P-384";
++const CHROME_GROUPS_NO_MLKEM: &str = "X25519:P-256:P-384";
++
++/// Shape the TCP ClientHello like current Chrome (ciphers, groups, GREASE, OCSP/SCT).
++fn apply_chrome_clienthello(builder: &mut SslConnectorBuilder) -> anyhow::Result<()> {
++    builder
++        .set_min_proto_version(Some(SslVersion::TLS1_2))
++        .with_context(|| "Cannot set TLS min version")?;
++    builder
++        .set_max_proto_version(Some(SslVersion::TLS1_3))
++        .with_context(|| "Cannot set TLS max version")?;
++    builder
++        .set_cipher_list(CHROME_CIPHER_LIST)
++        .with_context(|| "Cannot set Chrome TLS cipher list")?;
++    if builder.set_curves_list(CHROME_GROUPS).is_err() {
++        builder
++            .set_curves_list(CHROME_GROUPS_NO_MLKEM)
++            .with_context(|| "Cannot set Chrome TLS groups")?;
++    }
++    builder
++        .set_sigalgs_list(CHROME_SIGALGS)
++        .with_context(|| "Cannot set Chrome TLS signature algorithms")?;
++    builder.set_grease_enabled(true);
++    builder.set_permute_extensions(true);
++    builder.enable_ocsp_stapling();
++    builder.enable_signed_cert_timestamps();
++    Ok(())
++}
++
+ fn encode_alpn(protocols: &[Vec<u8>]) -> Vec<u8> {
+     let mut out = Vec::new();
+     for proto in protocols {
+@@ -161,6 +217,7 @@ pub fn tls_connector(
+     tls_client_key: Option<PKey<Private>>,
+ ) -> anyhow::Result<SslConnector> {
+     let mut builder = SslConnector::builder(SslMethod::tls_client()).with_context(|| "Cannot create TLS connector")?;
++    apply_chrome_clienthello(&mut builder)?;
+ 
+     if tls_verify_certificate {
+         builder.set_verify(SslVerifyMode::PEER);
+@@ -417,6 +474,8 @@ pub async fn connect(client_cfg: &ClientConfig, tcp_stream: TcpStream) -> anyhow
+         config.set_use_server_name_indication(false);
+         config.set_verify_hostname(false);
+     }
++    // Chrome sends an ECH GREASE payload even when it has no real ECH config.
++    config.set_enable_ech_grease(true);
+     let tls_stream = tokio_boring::connect(config, &sni, tcp_stream)
+         .await
+         .map_err(|err| anyhow!("TLS handshake failed: {err}"))?;
+--- a/wstunnel/src/tunnel/client/client.rs
++++ b/wstunnel/src/tunnel/client/client.rs
+@@ -1,15 +1,15 @@
+ use crate::executor::{DefaultTokioExecutor, TokioExecutorRef};
+ use crate::tunnel;
++#[cfg(feature = "rustls")]
++use crate::tunnel::LocalProtocol;
++use crate::tunnel::RemoteAddr;
+ use crate::tunnel::client::ClientConfig;
+-use crate::tunnel::client::connection_pool::L4StreamManager;
++use crate::tunnel::client::connection_pool::{L4StreamManager, l4_negotiated_alpn};
+ use crate::tunnel::downstream_listeners::{DownstreamListener, DownstreamRead, DownstreamWrite};
+ use crate::tunnel::tls_reloader::TlsReloader;
+ use crate::tunnel::transport::io::{TransportReader, TransportWriter};
+ use crate::tunnel::transport::{TransportScheme, jwt_token_to_tunnel};
+ use crate::tunnel::upstream_connectors::UpstreamConnector;
+-#[cfg(feature = "rustls")]
+-use crate::tunnel::LocalProtocol;
+-use crate::tunnel::RemoteAddr;
+ use anyhow::Context;
+ use futures_util::pin_mut;
+ use hyper::header::COOKIE;
+@@ -62,29 +62,35 @@ impl<E: TokioExecutorRef> Client<E> {
+         })
+     }
+ 
+-    pub async fn connect_to_server<R, W>(
++    async fn connect_transport(
+         &self,
+         request_id: Uuid,
+         remote_cfg: &RemoteAddr,
+-        duplex_stream: (R, W),
+-    ) -> anyhow::Result<()>
+-    where
+-        R: DownstreamRead,
+-        W: DownstreamWrite,
+-    {
+-        // Connect to server with the correct protocol. Capture the result instead of `?`-ing it: on
+-        // failure we must still acknowledge the local handshake (e.g. send a SOCKS5 error reply)
+-        // before bubbling the error up.
+-        let connect_result = match self.config.remote_addr.scheme() {
+-            TransportScheme::Ws | TransportScheme::Wss => {
+-                tunnel::transport::websocket::connect(request_id, self, remote_cfg)
+-                    .await
+-                    .map(|(r, w, response)| (TransportReader::Websocket(r), TransportWriter::Websocket(w), response))
+-            }
+-            TransportScheme::Http | TransportScheme::Https => {
+-                tunnel::transport::http2::connect(request_id, self, remote_cfg)
+-                    .await
+-                    .map(|(r, w, response)| (TransportReader::Http2(r), TransportWriter::Http2(w), response))
++    ) -> anyhow::Result<(TransportReader, TransportWriter, hyper::http::response::Parts)> {
++        match self.config.remote_addr.scheme() {
++            TransportScheme::Ws => tunnel::transport::websocket::connect(request_id, self, remote_cfg)
++                .await
++                .map(|(r, w, response)| (TransportReader::Websocket(r), TransportWriter::Websocket(w), response)),
++            TransportScheme::Http => tunnel::transport::http2::connect(request_id, self, remote_cfg)
++                .await
++                .map(|(r, w, response)| (TransportReader::Http2(r), TransportWriter::Http2(w), response)),
++            // wss:// and https:// send the same Chrome ClientHello (ALPN h2, http/1.1).
++            // Follow whatever the peer selected.
++            TransportScheme::Wss | TransportScheme::Https => {
++                let mut pooled_cnx = self.cnx_pool.get().await.map_err(|err| {
++                    anyhow::anyhow!("failed to get a connection to the server from the pool: {err:?}")
++                })?;
++                if l4_negotiated_alpn(&pooled_cnx) == Some(b"h2") {
++                    tunnel::transport::http2::connect_on(request_id, self, remote_cfg, &mut pooled_cnx)
++                        .await
++                        .map(|(r, w, response)| (TransportReader::Http2(r), TransportWriter::Http2(w), response))
++                } else {
++                    tunnel::transport::websocket::connect_on(request_id, self, remote_cfg, &mut pooled_cnx)
++                        .await
++                        .map(|(r, w, response)| {
++                            (TransportReader::Websocket(r), TransportWriter::Websocket(w), response)
++                        })
++                }
+             }
+             TransportScheme::Wts => {
+                 #[cfg(feature = "rustls")]
+@@ -112,10 +118,27 @@ impl<E: TokioExecutorRef> Client<E> {
+                 }
+                 #[cfg(not(feature = "rustls"))]
+                 {
++                    let _ = remote_cfg;
+                     Err(anyhow::anyhow!(TransportScheme::RUSTLS_REQUIRED_FOR_WEBTRANSPORT))
+                 }
+             }
+-        };
++        }
++    }
++
++    pub async fn connect_to_server<R, W>(
++        &self,
++        request_id: Uuid,
++        remote_cfg: &RemoteAddr,
++        duplex_stream: (R, W),
++    ) -> anyhow::Result<()>
++    where
++        R: DownstreamRead,
++        W: DownstreamWrite,
++    {
++        // Connect to server with the correct protocol. Capture the result instead of `?`-ing it: on
++        // failure we must still acknowledge the local handshake (e.g. send a SOCKS5 error reply)
++        // before bubbling the error up.
++        let connect_result = self.connect_transport(request_id, remote_cfg).await;
+ 
+         let (local_rx, mut local_tx) = duplex_stream;
+ 
+@@ -210,60 +233,17 @@ impl<E: TokioExecutorRef> Client<E> {
+                 id = request_id.to_string(),
+                 remote = format!("{}:{}", remote_addr.host, remote_addr.port)
+             );
+-            // Correctly configure tunnel cfg
+-            let (ws_rx, ws_tx, response) = match client.config.remote_addr.scheme() {
+-                TransportScheme::Ws | TransportScheme::Wss => {
+-                    match tunnel::transport::websocket::connect(request_id, &client, &remote_addr)
+-                        .instrument(span.clone())
+-                        .await
+-                    {
+-                        Ok((r, w, response)) => {
+-                            (TransportReader::Websocket(r), TransportWriter::Websocket(w), response)
+-                        }
+-                        Err(err) => {
+-                            let reconnect_delay = reconnect_delay();
+-                            event!(parent: &span, Level::ERROR, "Retrying in {:?}, cannot connect to remote server: {:?}", reconnect_delay, err);
+-                            tokio::time::sleep(reconnect_delay).await;
+-                            continue;
+-                        }
+-                    }
+-                }
+-                TransportScheme::Http | TransportScheme::Https => {
+-                    match tunnel::transport::http2::connect(request_id, &client, &remote_addr)
+-                        .instrument(span.clone())
+-                        .await
+-                    {
+-                        Ok((r, w, response)) => (TransportReader::Http2(r), TransportWriter::Http2(w), response),
+-                        Err(err) => {
+-                            let reconnect_delay = reconnect_delay();
+-                            event!(parent: &span, Level::ERROR, "Retrying in {:?}, cannot connect to remote server: {:?}", reconnect_delay, err);
+-                            tokio::time::sleep(reconnect_delay).await;
+-                            continue;
+-                        }
+-                    }
+-                }
+-                TransportScheme::Wts => {
+-                    #[cfg(not(feature = "rustls"))]
+-                    {
+-                        return Err(anyhow::anyhow!(TransportScheme::RUSTLS_REQUIRED_FOR_WEBTRANSPORT));
+-                    }
+-                    #[cfg(feature = "rustls")]
+-                    match tunnel::transport::webtransport::connect(request_id, &client, &remote_addr)
+-                        .instrument(span.clone())
+-                        .await
+-                    {
+-                        Ok((r, w, response)) => (
+-                            TransportReader::WebTransport(Box::new(r)),
+-                            TransportWriter::WebTransport(Box::new(w)),
+-                            response,
+-                        ),
+-                        Err(err) => {
+-                            let reconnect_delay = reconnect_delay();
+-                            event!(parent: &span, Level::ERROR, "Retrying in {:?}, cannot connect to remote server: {:?}", reconnect_delay, err);
+-                            tokio::time::sleep(reconnect_delay).await;
+-                            continue;
+-                        }
+-                    }
++            let (ws_rx, ws_tx, response) = match client
++                .connect_transport(request_id, &remote_addr)
++                .instrument(span.clone())
++                .await
++            {
++                Ok(tunnel) => tunnel,
++                Err(err) => {
++                    let reconnect_delay = reconnect_delay();
++                    event!(parent: &span, Level::ERROR, "Retrying in {:?}, cannot connect to remote server: {:?}", reconnect_delay, err);
++                    tokio::time::sleep(reconnect_delay).await;
++                    continue;
+                 }
+             };
+             reconnect_delay = new_reconnect_delay(self.reverse_tunnel_connection_retry_max_backoff);
+--- a/wstunnel/src/tunnel/client/connection_pool/l4_stream.rs
++++ b/wstunnel/src/tunnel/client/connection_pool/l4_stream.rs
+@@ -12,6 +12,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+ pub struct L4Stream {
+     read: L4ReadHalf,
+     write: L4WriteHalf,
++    negotiated_alpn: Option<Vec<u8>>,
+ }
+ 
+ impl L4Stream {
+@@ -20,17 +21,24 @@ impl L4Stream {
+         Self {
+             read: L4ReadHalf::Plain(read, read_buf),
+             write: L4WriteHalf::Plain(write),
++            negotiated_alpn: None,
+         }
+     }
+ 
+     pub fn from_client_tls(tls: tokio_boring::SslStream<TcpStream>, read_buf: Bytes) -> Self {
++        let negotiated_alpn = tls.ssl().selected_alpn_protocol().map(|proto| proto.to_vec());
+         let (read, write) = tokio::io::split(tls);
+         Self {
+             read: L4ReadHalf::Tls(read, read_buf),
+             write: L4WriteHalf::Tls(write),
++            negotiated_alpn,
+         }
+     }
+ 
++    pub fn negotiated_alpn(&self) -> Option<&[u8]> {
++        self.negotiated_alpn.as_deref()
++    }
++
+     pub fn from_server_tls(tls: tokio_boring::SslStream<TcpStream>, read_buf: Bytes) -> Self {
+         Self::from_client_tls(tls, read_buf)
+     }
+@@ -41,6 +49,7 @@ impl L4Stream {
+         Self {
+             read,
+             write: self.write,
++            negotiated_alpn: self.negotiated_alpn,
+         }
+     }
+ 
+--- a/wstunnel/src/tunnel/client/connection_pool/manager.rs
++++ b/wstunnel/src/tunnel/client/connection_pool/manager.rs
+@@ -2,9 +2,9 @@ use crate::protocols;
+ use crate::protocols::tls;
+ use crate::tunnel::client::ClientConfig;
+ use crate::tunnel::client::connection_pool::l4_stream::L4Stream;
+-use anyhow::anyhow;
+ #[cfg(feature = "rustls")]
+ use anyhow::Context;
++use anyhow::anyhow;
+ use bb8::ManageConnection;
+ use bytes::Bytes;
+ use std::ops::Deref;
+@@ -27,6 +27,17 @@ pub type PooledCnx = Option<Either<L4Stream, Session>>;
+ #[cfg(not(feature = "rustls"))]
+ pub type PooledCnx = Option<L4Stream>;
+ 
++pub fn l4_negotiated_alpn(conn: &PooledCnx) -> Option<&[u8]> {
++    #[cfg(feature = "rustls")]
++    {
++        conn.as_ref()?.as_ref().left()?.negotiated_alpn()
++    }
++    #[cfg(not(feature = "rustls"))]
++    {
++        conn.as_ref()?.negotiated_alpn()
++    }
++}
++
+ pub fn take_l4_stream(conn: &mut PooledCnx) -> Option<L4Stream> {
+     #[cfg(feature = "rustls")]
+     {
+@@ -145,7 +156,9 @@ impl ManageConnection for L4StreamManager {
+             }
+             #[cfg(not(feature = "rustls"))]
+             {
+-                return Err(anyhow!(crate::tunnel::transport::TransportScheme::RUSTLS_REQUIRED_FOR_WEBTRANSPORT));
++                return Err(anyhow!(
++                    crate::tunnel::transport::TransportScheme::RUSTLS_REQUIRED_FOR_WEBTRANSPORT
++                ));
+             }
+         }
+ 
+--- a/wstunnel/src/tunnel/client/connection_pool/mod.rs
++++ b/wstunnel/src/tunnel/client/connection_pool/mod.rs
+@@ -3,4 +3,6 @@ mod manager;
+ 
+ pub use l4_stream::{L4ReadHalf, L4Stream, L4WriteHalf};
+ pub use manager::L4StreamManager;
++pub use manager::PooledCnx;
++pub use manager::l4_negotiated_alpn;
+ pub use manager::take_l4_stream;
+--- a/wstunnel/src/tunnel/transport/http2.rs
++++ b/wstunnel/src/tunnel/transport/http2.rs
+@@ -1,7 +1,7 @@
+ use super::io::{MAX_PACKET_LENGTH, TransportRead, TransportWrite};
+ use crate::tunnel::RemoteAddr;
+ use crate::tunnel::client::Client;
+-use crate::tunnel::client::connection_pool::take_l4_stream;
++use crate::tunnel::client::connection_pool::{PooledCnx, take_l4_stream};
+ use crate::tunnel::transport::jwt::tunnel_to_jwt_token;
+ use crate::tunnel::transport::{TransportScheme, headers_from_file};
+ use anyhow::{Context, anyhow};
+@@ -129,7 +129,15 @@ pub async fn connect(
+         Ok(cnx) => Ok(cnx),
+         Err(err) => Err(anyhow!("failed to get a connection to the server from the pool: {err:?}")),
+     }?;
++    connect_on(request_id, client, dest_addr, &mut pooled_cnx).await
++}
+ 
++pub async fn connect_on(
++    request_id: Uuid,
++    client: &Client<impl crate::TokioExecutorRef>,
++    dest_addr: &RemoteAddr,
++    pooled_cnx: &mut PooledCnx,
++) -> anyhow::Result<(Http2TransportRead, Http2TransportWrite, Parts)> {
+     // In http2 HOST header does not exist, it is explicitly set in the authority from the request uri
+     let (headers_file, authority) =
+         client
+@@ -140,7 +148,8 @@ pub async fn connect(
+                 let (host, headers) = headers_from_file(headers_file_path);
+                 let host = if let Some((_, v)) = host {
+                     match (client.config.remote_addr.scheme(), client.config.remote_addr.port()) {
+-                        (TransportScheme::Http, 80) | (TransportScheme::Https, 443) => {
++                        (TransportScheme::Http | TransportScheme::Ws, 80)
++                        | (TransportScheme::Https | TransportScheme::Wss, 443) => {
+                             Some(v.to_str().unwrap_or("").to_string())
+                         }
+                         (_, port) => Some(format!("{}:{}", v.to_str().unwrap_or(""), port)),
+@@ -156,7 +165,10 @@ pub async fn connect(
+         .method("POST")
+         .uri(format!(
+             "{}://{}/{}/events",
+-            client.config.remote_addr.scheme(),
++            match client.config.remote_addr.scheme() {
++                TransportScheme::Http | TransportScheme::Ws => "http",
++                _ => "https",
++            },
+             authority
+                 .as_deref()
+                 .unwrap_or_else(|| client.config.http_header_host.to_str().unwrap_or("")),
+@@ -203,7 +215,7 @@ pub async fn connect(
+     })?;
+     debug!("with HTTP upgrade request {req:?}");
+     let transport =
+-        take_l4_stream(&mut pooled_cnx).ok_or_else(|| anyhow!("the connection pool did not return a TCP stream"))?;
++        take_l4_stream(pooled_cnx).ok_or_else(|| anyhow!("the connection pool did not return a TCP stream"))?;
+     let (mut request_sender, cnx) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+         .timer(TokioTimer::new())
+         .adaptive_window(true)
+--- a/wstunnel/src/tunnel/transport/types.rs
++++ b/wstunnel/src/tunnel/transport/types.rs
+@@ -30,9 +30,10 @@ impl TransportScheme {
+     pub fn alpn_protocols(&self) -> Vec<Vec<u8>> {
+         match self {
+             Self::Ws => vec![],
+-            Self::Wss => vec![b"http/1.1".to_vec()],
++            // Same ClientHello ALPN as Chrome. The client then follows the negotiated protocol
++            // (h2 → HTTP/2 tunnel, http/1.1 → websocket).
++            Self::Wss | Self::Https => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+             Self::Http => vec![],
+-            Self::Https => vec![b"h2".to_vec()],
+             // WebTransport rides HTTP/3, whose ALPN is "h3"
+             #[cfg(feature = "rustls")]
+             Self::Wts => vec![web_transport_quinn::ALPN.as_bytes().to_vec()],
+--- a/wstunnel/src/tunnel/transport/websocket.rs
++++ b/wstunnel/src/tunnel/transport/websocket.rs
+@@ -1,7 +1,7 @@
+ use super::io::{MAX_PACKET_LENGTH, TransportRead, TransportWrite};
+ use crate::tunnel::RemoteAddr;
+ use crate::tunnel::client::Client;
+-use crate::tunnel::client::connection_pool::{L4ReadHalf, L4Stream, L4WriteHalf, take_l4_stream};
++use crate::tunnel::client::connection_pool::{L4ReadHalf, L4Stream, L4WriteHalf, PooledCnx, take_l4_stream};
+ use crate::tunnel::transport::headers_from_file;
+ use crate::tunnel::transport::jwt::{JWT_HEADER_PREFIX, tunnel_to_jwt_token};
+ use anyhow::{Context, anyhow};
+@@ -255,11 +255,20 @@ pub async fn connect(
+     client: &Client<impl crate::TokioExecutorRef>,
+     dest_addr: &RemoteAddr,
+ ) -> anyhow::Result<(WebsocketTransportRead, WebsocketTransportWrite, Parts)> {
+-    let client_cfg = &client.config;
+     let mut pooled_cnx = match client.cnx_pool.get().await {
+         Ok(cnx) => Ok(cnx),
+         Err(err) => Err(anyhow!("failed to get a connection to the server from the pool: {err:?}")),
+     }?;
++    connect_on(request_id, client, dest_addr, &mut pooled_cnx).await
++}
++
++pub async fn connect_on(
++    request_id: Uuid,
++    client: &Client<impl crate::TokioExecutorRef>,
++    dest_addr: &RemoteAddr,
++    pooled_cnx: &mut PooledCnx,
++) -> anyhow::Result<(WebsocketTransportRead, WebsocketTransportWrite, Parts)> {
++    let client_cfg = &client.config;
+ 
+     let mut req = Request::builder()
+         .method("GET")
+@@ -315,7 +324,7 @@ pub async fn connect(
+     })?;
+     debug!("with HTTP upgrade request {req:?}");
+     let transport =
+-        take_l4_stream(&mut pooled_cnx).ok_or_else(|| anyhow!("the connection pool did not return a TCP stream"))?;
++        take_l4_stream(pooled_cnx).ok_or_else(|| anyhow!("the connection pool did not return a TCP stream"))?;
+ 
+     let (ws, response) = fastwebsockets::handshake::client(&TokioExecutor::new(), req, transport)
+         .await

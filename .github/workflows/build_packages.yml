@@ -11,11 +11,11 @@ jobs:
       matrix:
         target:
           - mediatek/filogic
-          - ipq806x/generic
-          - ipq40xx/generic
+#          - ipq806x/generic
+#          - ipq40xx/generic
           - rockchip/armv8
         version:
-          - releases/23.05.6
+#          - releases/23.05.6
           - releases/24.10.8
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           VERSION_PATH: ${{ matrix.version }}
-          PACKAGES: ocserv-update openssl-update openconnect-update
+          PACKAGES: wstunnel
           V: s
       - name: Write artifact name
         run: |
