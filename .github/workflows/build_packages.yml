@@ -28,7 +28,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           VERSION_PATH: ${{ matrix.version }}
-          PACKAGES: ocserv-update openssl-update openconnect-update
+          PACKAGES: ocserv-update openconnect-update
           V: s
       - name: Write artifact name
         run: |
