@@ -1,0 +1,31 @@
+From 40cf2bf99258dfcb7504ea8e1f281b7ed07109ca Mon Sep 17 00:00:00 2001
+From: Jimmy Qin <sunnyqeen@gmail.com>
+Date: Thu, 22 Oct 2026 13:06:41 +0200
+Subject: use oc_syslog for DTLS_FATAL_ERR_CMD
+
+
+--- a/src/tlslib.h
++++ b/src/tlslib.h
+@@ -79,17 +79,11 @@ size_t tls_get_overhead(gnutls_protocol_t, gnutls_cipher_algorithm_t,
+ 
+ #define DTLS_FATAL_ERR_CMD(err, CMD)                                     \
+ 	{                                                                \
+-		if (err < 0 && gnutls_error_is_fatal(err) != 0) {        \
+-			if (syslog_open)                                 \
+-				syslog(LOG_WARNING,                      \
+-				       "GnuTLS error (at %s:%d): %s",    \
+-				       __FILE__, __LINE__,               \
+-				       gnutls_strerror(err));            \
+-			else                                             \
+-				fprintf(stderr,                          \
+-					"GnuTLS error (at %s:%d): %s\n", \
+-					__FILE__, __LINE__,              \
+-					gnutls_strerror(err));           \
++		if (err < 0 && gnutls_error_is_fatal(err) != 0) {        \
++			oc_syslog(LOG_WARNING,                      \
++			       "GnuTLS error (at %s:%d): %s",    \
++			       __FILE__, __LINE__,               \
++			       gnutls_strerror(err));            \
+ 			CMD;                                             \
+ 		}                                                        \
+ 	}

@@ -1,0 +1,59 @@
+From 0ca0e9c377c88c71749b07e45321a525c35c3b14 Mon Sep 17 00:00:00 2001
+From: Jimmy Qin <sunnyqeen@gmail.com>
+Date: Thu, 22 Oct 2026 18:37:39 +0200
+Subject: lower tlslib log level
+
+
+--- a/src/tlslib.c
++++ b/src/tlslib.c
+@@ -280,11 +280,11 @@ static void tls_audit_log_func(gnutls_session_t session, const char *str)
+ 	(void)(ws);
+ 
+ 	if (session == NULL) {
+-		oc_syslog(LOG_NOTICE, "warning: %s", str);
++		oc_syslog(LOG_INFO, "warning: %s", str);
+ 	} else {
+ 		ws = gnutls_session_get_ptr(session);
+ 
+-		oclog(ws, LOG_NOTICE, "warning: %s", str);
++		oclog(ws, LOG_INFO, "warning: %s", str);
+ 	}
+ }
+ 
+--- a/src/tlslib.h
++++ b/src/tlslib.h
+@@ -70,7 +70,7 @@ size_t tls_get_overhead(gnutls_protocol_t, gnutls_cipher_algorithm_t,
+ 	{                                                                 \
+ 		if (err == GNUTLS_E_FATAL_ALERT_RECEIVED ||               \
+ 		    err == GNUTLS_E_WARNING_ALERT_RECEIVED) {             \
+-			oclog(ws, LOG_NOTICE, "TLS alert (at %s:%d): %s", \
++			oclog(ws, LOG_INFO, "TLS alert (at %s:%d): %s", \
+ 			      __FILE__, __LINE__,                         \
+ 			      gnutls_alert_get_name(                      \
+ 				      gnutls_alert_get(session)));        \
+@@ -80,7 +80,7 @@ size_t tls_get_overhead(gnutls_protocol_t, gnutls_cipher_algorithm_t,
+ #define DTLS_FATAL_ERR_CMD(err, CMD)                                     \
+ 	{                                                                \
+ 		if (err < 0 && gnutls_error_is_fatal(err) != 0) {        \
+-			oc_syslog(LOG_WARNING,                      \
++			oc_syslog(LOG_INFO,                      \
+ 			       "GnuTLS error (at %s:%d): %s",    \
+ 			       __FILE__, __LINE__,               \
+ 			       gnutls_strerror(err));            \
+@@ -94,14 +94,14 @@ size_t tls_get_overhead(gnutls_protocol_t, gnutls_cipher_algorithm_t,
+ 	{                                                                      \
+ 		if (ws->session != NULL) {                                     \
+ 			if (err < 0 && gnutls_error_is_fatal(err) != 0) {      \
+-				oclog(ws, LOG_WARNING,                         \
++				oclog(ws, LOG_INFO,                         \
+ 				      "GnuTLS error (at %s:%d): %s", __FILE__, \
+ 				      __LINE__, gnutls_strerror(err));         \
+ 				CMD;                                           \
+ 			}                                                      \
+ 		} else {                                                       \
+ 			if (err < 0 && errno != EINTR && errno != EAGAIN) {    \
+-				oclog(ws, LOG_WARNING,                         \
++				oclog(ws, LOG_INFO,                         \
+ 				      "socket error (at %s:%d): %s", __FILE__, \
+ 				      __LINE__, strerror(errno));              \
+ 				CMD;                                           \
