@@ -5,6 +5,14 @@ USE_PROCD=1
 
 PROG=/usr/bin/wstunnel
 
+append_client_redirect() {
+	procd_append_param command -L "$1"
+}
+
+append_server_redirect() {
+	procd_append_param command --restrict-to "$1"
+}
+
 append_extra_args() {
 	procd_append_param command "$1"
 }
@@ -17,33 +25,35 @@ start_instance() {
 	config_get_bool enabled "$cfg" enabled 0
 	[ "$enabled" -eq 0 ] && return
 
-	procd_open_instance "$cfg"
-	procd_set_param command "$PROG" "$mode" --no-color
+	[ -x "$PROG" ] || {
+		logger -t wstunnel "Error: $PROG is missing or not executable"
+		return 1
+	}
 
 	if [ "$mode" = "client" ]; then
 		config_get server "$cfg" server
-		config_get redirect "$cfg" redirect
 
-		if [ -z "$redirect" ] || [ -z "$server" ]; then
-			echo "wstunnel client error ($cfg): both 'option redirect' and 'option server' are required"
+		if [ -z "$server" ]; then
+			logger -t wstunnel "Client error ($cfg): 'option server' is required"
 			return 1
 		fi
-		procd_append_param command -L "$redirect" "$server"
+
+		procd_open_instance "$cfg"
+		procd_set_param command "$PROG" "$mode" --no-color
+		config_list_foreach "$cfg" redirect append_client_redirect
+		procd_append_param command "$server"
 
 	elif [ "$mode" = "server" ]; then
 		config_get listen "$cfg" listen
-		config_get redirect "$cfg" redirect
 
 		if [ -z "$listen" ]; then
-			echo "wstunnel server error ($cfg): 'option listen' is required"
+			logger -t wstunnel "Server error ($cfg): 'option listen' is required"
 			return 1
 		fi
 
-		# If redirect is provided, lock down the server. If missing, it acts as an open proxy.
-		if [ -n "$redirect" ]; then
-			procd_append_param command --restrict-to "$redirect"
-		fi
-
+		procd_open_instance "$cfg"
+		procd_set_param command "$PROG" "$mode" --no-color
+		config_list_foreach "$cfg" redirect append_server_redirect
 		procd_append_param command "$listen"
 	fi
 

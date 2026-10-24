@@ -1,10 +1,12 @@
-From 9f5b1b0f4fe794f50a14957e8f1f99f1f703fa3c Mon Sep 17 00:00:00 2001
-From: Jimmy Qin <sunnyqeen@gmail.com>
-Date: Fri, 11 Sep 2026 13:19:59 +0200
+From 965e51645755dd6bf673f16b74443ba8095265f0 Mon Sep 17 00:00:00 2001
+From: SunnyQeen <sunnyqeen@gmail.com>
+Date: Sat, 24 Oct 2026 13:07:25 +0200
 Subject: Serve optional HTML for non-websocket HTTP requests so probes see a
  normal page instead of 400.
 
 
+diff --git a/wstunnel/src/config.rs b/wstunnel/src/config.rs
+index 351ff73..9fe2861 100644
 --- a/wstunnel/src/config.rs
 +++ b/wstunnel/src/config.rs
 @@ -410,6 +410,21 @@ pub struct ServerCreationRequest {
@@ -29,6 +31,8 @@ Subject: Serve optional HTML for non-websocket HTTP requests so probes see a
      /// Configure how much time a remote-to-local server is going to wait idle (without any new ws clients) before unbinding itself/stopping the server
      /// Default is 190 seconds/3min
      #[cfg_attr(feature = "clap", arg(
+diff --git a/wstunnel/src/lib.rs b/wstunnel/src/lib.rs
+index 35bfd77..7b5902a 100644
 --- a/wstunnel/src/lib.rs
 +++ b/wstunnel/src/lib.rs
 @@ -20,7 +20,7 @@ use crate::tunnel::downstream_listeners::{
@@ -48,9 +52,11 @@ Subject: Serve optional HTML for non-websocket HTTP requests so probes see a
      };
      let server = Server::new(server_config, executor);
  
+diff --git a/wstunnel/src/test_integrations.rs b/wstunnel/src/test_integrations.rs
+index 10a9f7e..967a13a 100644
 --- a/wstunnel/src/test_integrations.rs
 +++ b/wstunnel/src/test_integrations.rs
-@@ -82,6 +82,7 @@ fn server_no_tls(dns_resolver: DnsResolver) -> Server {
+@@ -88,6 +88,7 @@ fn server_no_tls(dns_resolver: DnsResolver) -> Server {
          http_proxy: None,
          remote_server_idle_timeout: Duration::from_secs(30),
          enable_webtransport: false,
@@ -58,7 +64,7 @@ Subject: Serve optional HTML for non-websocket HTTP requests so probes see a
      };
      Server::new(server_config, DefaultTokioExecutor::default())
  }
-@@ -108,6 +109,7 @@ fn server_webtransport(dns_resolver: DnsResolver) -> Server {
+@@ -114,6 +115,7 @@ fn server_webtransport(dns_resolver: DnsResolver) -> Server {
          http_proxy: None,
          remote_server_idle_timeout: Duration::from_secs(30),
          enable_webtransport: true,
@@ -66,6 +72,8 @@ Subject: Serve optional HTML for non-websocket HTTP requests so probes see a
      };
      Server::new(server_config, DefaultTokioExecutor::default())
  }
+diff --git a/wstunnel/src/tunnel/server/handler_websocket.rs b/wstunnel/src/tunnel/server/handler_websocket.rs
+index 6c0a23d..2682607 100644
 --- a/wstunnel/src/tunnel/server/handler_websocket.rs
 +++ b/wstunnel/src/tunnel/server/handler_websocket.rs
 @@ -1,6 +1,7 @@
@@ -85,6 +93,8 @@ Subject: Serve optional HTML for non-websocket HTTP requests so probes see a
      }
  
      let mask_frame = server.config.websocket_mask_frame;
+diff --git a/wstunnel/src/tunnel/server/mod.rs b/wstunnel/src/tunnel/server/mod.rs
+index 58e1119..6dbe5c4 100644
 --- a/wstunnel/src/tunnel/server/mod.rs
 +++ b/wstunnel/src/tunnel/server/mod.rs
 @@ -6,6 +6,8 @@ mod reverse_tunnel;
@@ -96,6 +106,8 @@ Subject: Serve optional HTML for non-websocket HTTP requests so probes see a
  pub use server::ServerConfig;
  pub use server::TlsServerConfig;
 +pub(crate) use server::non_upgrade_response;
+diff --git a/wstunnel/src/tunnel/server/server.rs b/wstunnel/src/tunnel/server/server.rs
+index 26dbbf3..0aeddcb 100644
 --- a/wstunnel/src/tunnel/server/server.rs
 +++ b/wstunnel/src/tunnel/server/server.rs
 @@ -25,6 +25,7 @@ use arc_swap::ArcSwap;

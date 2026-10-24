@@ -1,9 +1,11 @@
-From 169012d4e8f32c975bea6c45a324e68ef8ecd7e7 Mon Sep 17 00:00:00 2001
-From: Jimmy Qin <sunnyqeen@gmail.com>
-Date: Sat, 12 Sep 2026 12:26:58 +0200
+From 9cb443f705e2613a4085bd1a5a6bd50572491eff Mon Sep 17 00:00:00 2001
+From: SunnyQeen <sunnyqeen@gmail.com>
+Date: Sat, 24 Oct 2026 13:50:02 +0200
 Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
 
 
+diff --git a/wstunnel-cli/Cargo.toml b/wstunnel-cli/Cargo.toml
+index 1c794bb..7f2567f 100644
 --- a/wstunnel-cli/Cargo.toml
 +++ b/wstunnel-cli/Cargo.toml
 @@ -19,6 +19,7 @@ default = ["aws-lc-rs"]
@@ -14,26 +16,28 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
  aws-lc-rs-bindgen = ["wstunnel/aws-lc-rs-bindgen"]
  
  [[bin]]
+diff --git a/wstunnel/Cargo.toml b/wstunnel/Cargo.toml
+index 6fee0bd..17f088d 100644
 --- a/wstunnel/Cargo.toml
 +++ b/wstunnel/Cargo.toml
 @@ -40,13 +40,15 @@ httparse = { version = "1.10.1", features = [] }
  
- boring = { version = "4.19.0" }
- tokio-boring = { version = "4.19.0" }
+ boring = { version = "4.22.0" }
+ tokio-boring = { version = "4.22.0" }
 -# rustls is kept only for QUIC/WebTransport (web-transport-quinn/quinn) and Hickory DoT/DoH.
 -# TCP tunnel TLS uses BoringSSL via tokio-boring.
--rustls = { version = "0.23.43", default-features = false, features = ["logging", "std", "tls12"] }
+-rustls = { version = "0.23.46", default-features = false, features = ["logging", "std", "tls12"] }
 +# rustls is optional and off by default: QUIC/WebTransport and Hickory DoT/DoH.
 +# Enable with `--features rustls`. TCP tunnel TLS is always BoringSSL.
-+rustls = { version = "0.23.43", default-features = false, features = ["logging", "std", "tls12"], optional = true }
++rustls = { version = "0.23.46", default-features = false, features = ["logging", "std", "tls12"], optional = true }
 +# OS trust-store importer only (Windows ROOT / Security.framework / OpenSSL CA bundle).
 +# Certificates are kept as DER; rustls::RootCertStore is built from them only when the rustls feature is on.
- rustls-native-certs = { version = "0.8.4", features = [] }
+ rustls-native-certs = { version = "0.8.5", features = [] }
 -# WebTransport (HTTP/3 over QUIC) transport. Takes a rustls config for the QUIC handshake.
 +# WebTransport (HTTP/3 over QUIC). Takes a rustls config for the QUIC handshake.
  # Its default feature is aws-lc-rs, which would pull aws-lc-sys into the ring builds.
--web-transport-quinn = { version = "0.12.1", default-features = false, features = [] }
-+web-transport-quinn = { version = "0.12.1", default-features = false, features = [], optional = true }
+-web-transport-quinn = { version = "0.13.2", default-features = false, features = [] }
++web-transport-quinn = { version = "0.13.2", default-features = false, features = [], optional = true }
  x509-parser = "0.18.1"
  serde = { version = "1.0.229", features = ["derive"] }
  socket2 = { version = "0.6.5", features = ["all"] }
@@ -71,6 +75,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
 +  "rustls?/ring",
 +  "web-transport-quinn?/ring",
  ]
+diff --git a/wstunnel/src/lib.rs b/wstunnel/src/lib.rs
+index 2d9b6b6..a5ce5b8 100644
 --- a/wstunnel/src/lib.rs
 +++ b/wstunnel/src/lib.rs
 @@ -21,6 +21,7 @@ use crate::tunnel::downstream_listeners::{
@@ -158,6 +164,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
          http_fallback_html: args.http_fallback_html.map(HttpFallbackHtml::from_cli_arg),
      };
      let server = Server::new(server_config, executor);
+diff --git a/wstunnel/src/protocols/dns/resolver.rs b/wstunnel/src/protocols/dns/resolver.rs
+index 48b32e9..0b27331 100644
 --- a/wstunnel/src/protocols/dns/resolver.rs
 +++ b/wstunnel/src/protocols/dns/resolver.rs
 @@ -1,6 +1,8 @@
@@ -266,6 +274,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
          warn!(
              "DNS resolver has loaded no system certificates. If you use Dns Over HTTPS, or tls-over-https, it is most likely going to fail. Please install system certificates to avoid this warning."
          );
+diff --git a/wstunnel/src/protocols/tls/mod.rs b/wstunnel/src/protocols/tls/mod.rs
+index 934ecfb..70ecae3 100644
 --- a/wstunnel/src/protocols/tls/mod.rs
 +++ b/wstunnel/src/protocols/tls/mod.rs
 @@ -8,11 +8,15 @@ pub use server::TlsConnector;
@@ -284,6 +294,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
 +#[cfg(feature = "rustls")]
  pub use utils::find_leaf_certificate;
  pub use utils::find_leaf_cn_from_x509;
+diff --git a/wstunnel/src/protocols/tls/server.rs b/wstunnel/src/protocols/tls/server.rs
+index d61c6b4..fd32cc2 100644
 --- a/wstunnel/src/protocols/tls/server.rs
 +++ b/wstunnel/src/protocols/tls/server.rs
 @@ -6,14 +6,20 @@ use boring::ssl::{
@@ -414,6 +426,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
  impl ServerCertVerifier for NullVerifier {
      fn verify_server_cert(
          &self,
+diff --git a/wstunnel/src/protocols/tls/utils.rs b/wstunnel/src/protocols/tls/utils.rs
+index c260140..18d17e7 100644
 --- a/wstunnel/src/protocols/tls/utils.rs
 +++ b/wstunnel/src/protocols/tls/utils.rs
 @@ -1,10 +1,12 @@
@@ -429,9 +443,11 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
  pub fn find_leaf_certificate<'a>(tls_certificates: &'a [CertificateDer<'static>]) -> Option<X509Certificate<'a>> {
      for tls_certificate in tls_certificates {
          if let Ok((_, tls_certificate_x509)) = parse_x509_certificate(tls_certificate)
+diff --git a/wstunnel/src/test_integrations.rs b/wstunnel/src/test_integrations.rs
+index 5f69f1d..44384a5 100644
 --- a/wstunnel/src/test_integrations.rs
 +++ b/wstunnel/src/test_integrations.rs
-@@ -58,11 +58,10 @@ fn free_addr() -> (SocketAddr, Host) {
+@@ -64,11 +64,10 @@ fn free_addr() -> (SocketAddr, Host) {
  
  #[fixture]
  fn dns_resolver() -> DnsResolver {
@@ -446,7 +462,7 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
      let _ = rustls::crypto::ring::default_provider().install_default();
  
      DnsResolver::new_from_urls(&[], None, SoMark::new(None), true).expect("Cannot create DNS resolver")
-@@ -88,6 +87,7 @@ fn server_no_tls(dns_resolver: DnsResolver) -> Server {
+@@ -94,6 +93,7 @@ fn server_no_tls(dns_resolver: DnsResolver) -> Server {
  }
  
  /// Server serving webtransport over UDP, alongside websocket/http2 over TCP.
@@ -454,7 +470,7 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
  #[fixture]
  fn server_webtransport(dns_resolver: DnsResolver) -> Server {
      let server_config = ServerConfig {
-@@ -115,6 +115,7 @@ fn server_webtransport(dns_resolver: DnsResolver) -> Server {
+@@ -121,6 +121,7 @@ fn server_webtransport(dns_resolver: DnsResolver) -> Server {
  }
  
  /// Not a fixture, as the port to dial is only known once the server fixture has picked one.
@@ -462,7 +478,7 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
  async fn client_webtransport(server_port: u16, dns_resolver: DnsResolver) -> Client {
      // The embedded certificate is self-signed with no SAN, so verification must be off.
      let tls_connector =
-@@ -179,6 +180,7 @@ async fn client_ws(server_port: u16, dns_resolver: DnsResolver) -> Client {
+@@ -185,6 +186,7 @@ async fn client_ws(server_port: u16, dns_resolver: DnsResolver) -> Client {
          websocket_mask_frame: false,
          dns_resolver,
          http_proxy: None,
@@ -470,7 +486,7 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
          webtransport: None,
      };
  
-@@ -318,6 +320,7 @@ async fn test_udp_tunnel(server_no_tls: Server, no_restrictions: RestrictionsRul
+@@ -486,6 +488,7 @@ async fn test_udp_tunnel(server_no_tls: Server, no_restrictions: RestrictionsRul
      assert_eq!(&buf[..6], b"world!");
  }
  
@@ -478,7 +494,7 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
  #[rstest]
  #[timeout(Duration::from_secs(15))]
  #[tokio::test]
-@@ -387,6 +390,7 @@ async fn read_one_datagram(
+@@ -555,6 +558,7 @@ async fn read_one_datagram(
      }
  }
  
@@ -486,6 +502,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
  #[rstest]
  #[timeout(Duration::from_secs(15))]
  #[tokio::test]
+diff --git a/wstunnel/src/tunnel/ca_reloader.rs b/wstunnel/src/tunnel/ca_reloader.rs
+index 2105c5d..5e4d082 100644
 --- a/wstunnel/src/tunnel/ca_reloader.rs
 +++ b/wstunnel/src/tunnel/ca_reloader.rs
 @@ -1,17 +1,35 @@
@@ -615,6 +633,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
 +        let _ = rustls::crypto::ring::default_provider().install_default();
      }
  }
+diff --git a/wstunnel/src/tunnel/client/client.rs b/wstunnel/src/tunnel/client/client.rs
+index 66f6cbd..6331e44 100644
 --- a/wstunnel/src/tunnel/client/client.rs
 +++ b/wstunnel/src/tunnel/client/client.rs
 @@ -7,7 +7,9 @@ use crate::tunnel::tls_reloader::TlsReloader;
@@ -681,18 +701,54 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
          };
  
          let (local_rx, mut local_tx) = duplex_stream;
-@@ -229,6 +243,11 @@ impl<E: TokioExecutorRef> Client<E> {
+@@ -187,6 +201,11 @@ impl<E: TokioExecutorRef> Client<E> {
+             }
+         }
+ 
++        #[cfg(not(feature = "rustls"))]
++        if self.config.remote_addr.scheme().is_webtransport() {
++            return Err(anyhow::anyhow!(TransportScheme::RUSTLS_REQUIRED_FOR_WEBTRANSPORT));
++        }
++
+         let connector = Arc::new(connector);
+         let mut reconnect_delay = new_reconnect_delay(self.reverse_tunnel_connection_retry_max_backoff);
+         loop {
+@@ -214,15 +233,24 @@ impl<E: TokioExecutorRef> Client<E> {
+                             .await
+                             .map(|(r, w, response)| (TransportReader::Http2(r), TransportWriter::Http2(w), response))
                      }
-                 }
-                 TransportScheme::Wts => {
-+                    #[cfg(not(feature = "rustls"))]
-+                    {
-+                        return Err(anyhow::anyhow!(TransportScheme::RUSTLS_REQUIRED_FOR_WEBTRANSPORT));
+-                    TransportScheme::Wts => tunnel::transport::webtransport::connect(request_id, &client, &remote_addr)
+-                        .await
+-                        .map(|(r, w, response)| {
+-                            (
+-                                TransportReader::WebTransport(Box::new(r)),
+-                                TransportWriter::WebTransport(Box::new(w)),
+-                                response,
+-                            )
+-                        }),
++                    TransportScheme::Wts => {
++                        #[cfg(feature = "rustls")]
++                        {
++                            tunnel::transport::webtransport::connect(request_id, &client, &remote_addr)
++                                .await
++                                .map(|(r, w, response)| {
++                                    (
++                                        TransportReader::WebTransport(Box::new(r)),
++                                        TransportWriter::WebTransport(Box::new(w)),
++                                        response,
++                                    )
++                                })
++                        }
++                        #[cfg(not(feature = "rustls"))]
++                        {
++                            Err(anyhow::anyhow!(TransportScheme::RUSTLS_REQUIRED_FOR_WEBTRANSPORT))
++                        }
 +                    }
-+                    #[cfg(feature = "rustls")]
-                     match tunnel::transport::webtransport::connect(request_id, &client, &remote_addr)
-                         .instrument(span.clone())
-                         .await
+                 }
+             }
+             .instrument(span.clone());
+diff --git a/wstunnel/src/tunnel/client/config.rs b/wstunnel/src/tunnel/client/config.rs
+index 0ff9527..5615ffb 100644
 --- a/wstunnel/src/tunnel/client/config.rs
 +++ b/wstunnel/src/tunnel/client/config.rs
 @@ -2,6 +2,7 @@ use crate::protocols::dns::DnsResolver;
@@ -716,6 +772,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
      pub fn quic_server_name(&self) -> String {
          self.remote_addr
              .tls()
+diff --git a/wstunnel/src/tunnel/client/connection_pool/manager.rs b/wstunnel/src/tunnel/client/connection_pool/manager.rs
+index 695e8c3..6f29c10 100644
 --- a/wstunnel/src/tunnel/client/connection_pool/manager.rs
 +++ b/wstunnel/src/tunnel/client/connection_pool/manager.rs
 @@ -2,18 +2,42 @@ use crate::protocols;
@@ -870,6 +928,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
          }
      }
  }
+diff --git a/wstunnel/src/tunnel/client/connection_pool/mod.rs b/wstunnel/src/tunnel/client/connection_pool/mod.rs
+index cc36ef3..3b6cd13 100644
 --- a/wstunnel/src/tunnel/client/connection_pool/mod.rs
 +++ b/wstunnel/src/tunnel/client/connection_pool/mod.rs
 @@ -3,3 +3,4 @@ mod manager;
@@ -877,6 +937,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
  pub use l4_stream::{L4ReadHalf, L4Stream, L4WriteHalf};
  pub use manager::L4StreamManager;
 +pub use manager::take_l4_stream;
+diff --git a/wstunnel/src/tunnel/server/mod.rs b/wstunnel/src/tunnel/server/mod.rs
+index 6dbe5c4..9b8087a 100644
 --- a/wstunnel/src/tunnel/server/mod.rs
 +++ b/wstunnel/src/tunnel/server/mod.rs
 @@ -1,6 +1,7 @@
@@ -887,6 +949,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
  mod handler_webtransport;
  mod reverse_tunnel;
  mod server;
+diff --git a/wstunnel/src/tunnel/server/server.rs b/wstunnel/src/tunnel/server/server.rs
+index b02d188..ecf28f7 100644
 --- a/wstunnel/src/tunnel/server/server.rs
 +++ b/wstunnel/src/tunnel/server/server.rs
 @@ -10,6 +10,7 @@ use crate::tunnel::downstream_listeners::{
@@ -935,6 +999,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
          }
  
          loop {
+diff --git a/wstunnel/src/tunnel/server/utils.rs b/wstunnel/src/tunnel/server/utils.rs
+index c20cc21..ec2032c 100644
 --- a/wstunnel/src/tunnel/server/utils.rs
 +++ b/wstunnel/src/tunnel/server/utils.rs
 @@ -213,6 +213,7 @@ pub(super) fn validate_tunnel<'a>(
@@ -945,6 +1011,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
  pub(super) fn matches_any_restriction(
      path_prefix: &str,
      authorization: Option<&str>,
+diff --git a/wstunnel/src/tunnel/transport/http2.rs b/wstunnel/src/tunnel/transport/http2.rs
+index cfd6a3f..5c326ee 100644
 --- a/wstunnel/src/tunnel/transport/http2.rs
 +++ b/wstunnel/src/tunnel/transport/http2.rs
 @@ -1,11 +1,11 @@
@@ -973,6 +1041,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
      let (mut request_sender, cnx) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
          .timer(TokioTimer::new())
          .adaptive_window(true)
+diff --git a/wstunnel/src/tunnel/transport/io.rs b/wstunnel/src/tunnel/transport/io.rs
+index c885550..7e3d01b 100644
 --- a/wstunnel/src/tunnel/transport/io.rs
 +++ b/wstunnel/src/tunnel/transport/io.rs
 @@ -1,5 +1,6 @@
@@ -1072,6 +1142,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
              Self::WebTransportUdp(s) => s.handle_pending_operations().await,
          }
      }
+diff --git a/wstunnel/src/tunnel/transport/mod.rs b/wstunnel/src/tunnel/transport/mod.rs
+index bf94bca..76fc27a 100644
 --- a/wstunnel/src/tunnel/transport/mod.rs
 +++ b/wstunnel/src/tunnel/transport/mod.rs
 @@ -11,6 +11,7 @@ pub mod io;
@@ -1082,6 +1154,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
  pub mod webtransport;
  
  pub use jwt::JWT_HEADER_PREFIX;
+diff --git a/wstunnel/src/tunnel/transport/types.rs b/wstunnel/src/tunnel/transport/types.rs
+index 0fc2444..1e88dd2 100644
 --- a/wstunnel/src/tunnel/transport/types.rs
 +++ b/wstunnel/src/tunnel/transport/types.rs
 @@ -34,7 +34,10 @@ impl TransportScheme {
@@ -1106,6 +1180,8 @@ Subject: Make rustls opt-in so default builds keep only BoringSSL for TCP TLS.
  }
  impl FromStr for TransportScheme {
      type Err = ();
+diff --git a/wstunnel/src/tunnel/transport/websocket.rs b/wstunnel/src/tunnel/transport/websocket.rs
+index 16350da..e24e46a 100644
 --- a/wstunnel/src/tunnel/transport/websocket.rs
 +++ b/wstunnel/src/tunnel/transport/websocket.rs
 @@ -1,12 +1,11 @@

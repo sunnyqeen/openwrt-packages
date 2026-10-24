@@ -1,10 +1,12 @@
-From d93c5ca263dc8d1e5f4d59210716aabad9a0a4d2 Mon Sep 17 00:00:00 2001
-From: Jimmy Qin <sunnyqeen@gmail.com>
-Date: Fri, 11 Sep 2026 13:20:00 +0200
+From 146c81483813b00db01af4990b42e7bd942eb48b Mon Sep 17 00:00:00 2001
+From: SunnyQeen <sunnyqeen@gmail.com>
+Date: Sat, 24 Oct 2026 13:08:48 +0200
 Subject: Replace cfg_select with cfg attributes so the crate builds on Rust
- 1.94 and below.
+ 1.93.
 
 
+diff --git a/wstunnel/src/protocols/dns/resolver.rs b/wstunnel/src/protocols/dns/resolver.rs
+index efbb42f..734af5f 100644
 --- a/wstunnel/src/protocols/dns/resolver.rs
 +++ b/wstunnel/src/protocols/dns/resolver.rs
 @@ -191,24 +191,24 @@ impl DnsResolver {
@@ -37,13 +39,13 @@ Subject: Replace cfg_select with cfg attributes so the crate builds on Rust
 -                        return Ok(Self::System);
 -                    };
 -                    return Ok(Self::TrustDns {
--                        resolver: Box::new(mk_resolver(cfg, opts, proxy, so_mark)?),
+-                        resolver: Arc::new(mk_resolver(cfg, opts, proxy, so_mark)?),
 -                        prefer_ipv6,
 -                    });
 -                }
 +                };
 +                return Ok(Self::TrustDns {
-+                    resolver: Box::new(mk_resolver(cfg, opts, proxy, so_mark)?),
++                    resolver: Arc::new(mk_resolver(cfg, opts, proxy, so_mark)?),
 +                    prefer_ipv6,
 +                });
              }

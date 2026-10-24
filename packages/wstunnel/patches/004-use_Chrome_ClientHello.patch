@@ -1,11 +1,13 @@
-From 08800a2d9e7f509b9d463bd7c8412cb993fa9d32 Mon Sep 17 00:00:00 2001
-From: Jimmy Qin <sunnyqeen@gmail.com>
-Date: Sat, 12 Sep 2026 12:42:00 +0200
+From 2aa9105596b7bb361f572d9605fa4d58e61ad8bb Mon Sep 17 00:00:00 2001
+From: SunnyQeen <sunnyqeen@gmail.com>
+Date: Sat, 24 Oct 2026 13:50:53 +0200
 Subject: Shape the TCP ClientHello like Chrome so wss/https tunnels blend with
  browser traffic, while wss stays on HTTP/1.1 WebSocket like a new Chrome
  connection.
 
 
+diff --git a/wstunnel/src/protocols/tls/server.rs b/wstunnel/src/protocols/tls/server.rs
+index fd32cc2..8cbaeb5 100644
 --- a/wstunnel/src/protocols/tls/server.rs
 +++ b/wstunnel/src/protocols/tls/server.rs
 @@ -1,7 +1,7 @@

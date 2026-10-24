@@ -1,13 +1,15 @@
-From cb13b464b3f798f8cf40f671a26751585eaeeac7 Mon Sep 17 00:00:00 2001
-From: Jimmy Qin <sunnyqeen@gmail.com>
-Date: Sat, 12 Sep 2026 11:55:22 +0200
+From 583b3ff873f30f72446d1b5bb0e291d397bb672b Mon Sep 17 00:00:00 2001
+From: SunnyQeen <sunnyqeen@gmail.com>
+Date: Sat, 24 Oct 2026 13:35:38 +0200
 Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
  use rustls.
 
 
+diff --git a/Cargo.lock b/Cargo.lock
+index 3d9c0ff..7dde0db 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -459,6 +459,31 @@ dependencies = [
+@@ -458,6 +458,31 @@ dependencies = [
   "time",
  ]
  
@@ -39,7 +41,7 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
  [[package]]
  name = "bs58"
  version = "0.5.1"
-@@ -1194,6 +1219,33 @@ version = "0.2.0"
+@@ -1193,6 +1218,33 @@ version = "0.2.0"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
  
@@ -73,7 +75,7 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
  [[package]]
  name = "form_urlencoded"
  version = "1.2.2"
-@@ -1218,6 +1270,16 @@ dependencies = [
+@@ -1217,6 +1269,16 @@ dependencies = [
   "libc",
  ]
  
@@ -90,7 +92,7 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
  [[package]]
  name = "futures"
  version = "0.3.34"
-@@ -2467,6 +2529,17 @@ version = "1.70.2"
+@@ -2459,6 +2521,17 @@ version = "1.70.2"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
  
@@ -108,7 +110,7 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
  [[package]]
  name = "openssl-probe"
  version = "0.2.1"
-@@ -3111,15 +3184,6 @@ dependencies = [
+@@ -3103,15 +3176,6 @@ dependencies = [
   "security-framework",
  ]
  
@@ -124,7 +126,7 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
  [[package]]
  name = "rustls-pki-types"
  version = "1.15.1"
-@@ -3904,6 +3968,17 @@ dependencies = [
+@@ -3892,6 +3956,17 @@ dependencies = [
   "windows-sys 0.61.2",
  ]
  
@@ -142,7 +144,7 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
  [[package]]
  name = "tokio-fd"
  version = "0.3.0"
-@@ -4676,6 +4751,7 @@ dependencies = [
+@@ -4664,6 +4739,7 @@ dependencies = [
   "aws-lc-rs",
   "base64 0.23.1",
   "bb8",
@@ -150,7 +152,7 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
   "bytes",
   "clap",
   "collection_macros",
-@@ -4702,8 +4778,8 @@ dependencies = [
+@@ -4690,8 +4766,8 @@ dependencies = [
   "rcgen",
   "regex",
   "rstest",
@@ -160,7 +162,7 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
   "scopeguard",
   "serde",
   "serde_regex",
-@@ -4714,8 +4790,8 @@ dependencies = [
+@@ -4702,8 +4778,8 @@ dependencies = [
   "testcontainers",
   "time",
   "tokio",
@@ -170,30 +172,32 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
   "tokio-stream",
   "tokio-util",
   "tracing",
+diff --git a/wstunnel/Cargo.toml b/wstunnel/Cargo.toml
+index afdc8ad..6fee0bd 100644
 --- a/wstunnel/Cargo.toml
 +++ b/wstunnel/Cargo.toml
 @@ -38,10 +38,13 @@ pin-project = "1"
  notify = { version = "8.2.0", features = [] }
  httparse = { version = "1.10.1", features = [] }
  
-+boring = { version = "4.19.0" }
-+tokio-boring = { version = "4.19.0" }
++boring = { version = "4.22.0" }
++tokio-boring = { version = "4.22.0" }
 +# rustls is kept only for QUIC/WebTransport (web-transport-quinn/quinn) and Hickory DoT/DoH.
 +# TCP tunnel TLS uses BoringSSL via tokio-boring.
-+rustls = { version = "0.23.43", default-features = false, features = ["logging", "std", "tls12"] }
- rustls-native-certs = { version = "0.8.4", features = [] }
++rustls = { version = "0.23.46", default-features = false, features = ["logging", "std", "tls12"] }
+ rustls-native-certs = { version = "0.8.5", features = [] }
 -rustls-pemfile = { version = "2.2.0", features = [] }
 -# WebTransport (HTTP/3 over QUIC) transport. Takes our own rustls config, so the
 -# crypto provider follows from the aws-lc-rs/ring features below. Re-exports quinn.
 +# WebTransport (HTTP/3 over QUIC) transport. Takes a rustls config for the QUIC handshake.
  # Its default feature is aws-lc-rs, which would pull aws-lc-sys into the ring builds.
- web-transport-quinn = { version = "0.12.1", default-features = false, features = [] }
+ web-transport-quinn = { version = "0.13.2", default-features = false, features = [] }
  x509-parser = "0.18.1"
 @@ -59,7 +62,6 @@ derive_more = { version = "2.1.1", features = ["display", "error"] }
  # connection pool, whose connection is either a TCP stream or a webtransport session.
- either = { version = "1.18.0", default-features = false, features = ["use_std"] }
+ either = { version = "1.19.0", default-features = false, features = ["use_std"] }
  
--tokio-rustls = { version = "0.26.4", default-features = false, features = ["logging", "tls12"] }
+-tokio-rustls = { version = "0.26.6", default-features = false, features = ["logging", "tls12"] }
  rcgen = { version = "0.14.10", default-features = false, features = [] }
  # Already compiled in the tree (rcgen, x509-parser -> asn1-rs, which also turns on `std`);
  # declared directly so embedded_certificate can read the current year.
@@ -215,6 +219,8 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
    "rcgen/ring",
    "hickory-resolver/tls-ring",
    "hickory-resolver/https-ring",
+diff --git a/wstunnel/src/config.rs b/wstunnel/src/config.rs
+index 9fe2861..a191023 100644
 --- a/wstunnel/src/config.rs
 +++ b/wstunnel/src/config.rs
 @@ -3,7 +3,6 @@ pub use hyper::http::{HeaderName, HeaderValue};
@@ -258,6 +264,8 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
      }
  
      pub fn parse_http_headers(arg: &str) -> Result<(HeaderName, HeaderValue), io::Error> {
+diff --git a/wstunnel/src/embedded_certificate.rs b/wstunnel/src/embedded_certificate.rs
+index 15f024a..0333898 100644
 --- a/wstunnel/src/embedded_certificate.rs
 +++ b/wstunnel/src/embedded_certificate.rs
 @@ -1,10 +1,11 @@
@@ -287,6 +295,8 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
 -    (vec![cert], private_key)
 +    (vec![x509], private_key)
  });
+diff --git a/wstunnel/src/lib.rs b/wstunnel/src/lib.rs
+index 7b5902a..2d9b6b6 100644
 --- a/wstunnel/src/lib.rs
 +++ b/wstunnel/src/lib.rs
 @@ -74,8 +74,7 @@ pub async fn create_client(
@@ -337,6 +347,8 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
          };
  
          let tls_client_ca_certificates = args.tls_client_ca_certs.as_ref().map(|tls_client_ca| {
+diff --git a/wstunnel/src/protocols/dns/resolver.rs b/wstunnel/src/protocols/dns/resolver.rs
+index 734af5f..48b32e9 100644
 --- a/wstunnel/src/protocols/dns/resolver.rs
 +++ b/wstunnel/src/protocols/dns/resolver.rs
 @@ -17,10 +17,10 @@ use url::{Host, Url};
@@ -375,6 +387,8 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
                  return Ok(Self::System);
              }
              #[cfg(not(target_os = "android"))]
+diff --git a/wstunnel/src/protocols/tls/mod.rs b/wstunnel/src/protocols/tls/mod.rs
+index 71d7fae..934ecfb 100644
 --- a/wstunnel/src/protocols/tls/mod.rs
 +++ b/wstunnel/src/protocols/tls/mod.rs
 @@ -1,6 +1,10 @@
@@ -395,6 +409,8 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
 +pub use utils::cn_from_x509;
  pub use utils::find_leaf_certificate;
 +pub use utils::find_leaf_cn_from_x509;
+diff --git a/wstunnel/src/protocols/tls/server.rs b/wstunnel/src/protocols/tls/server.rs
+index 3f2b0dc..d61c6b4 100644
 --- a/wstunnel/src/protocols/tls/server.rs
 +++ b/wstunnel/src/protocols/tls/server.rs
 @@ -1,189 +1,211 @@
@@ -916,6 +932,8 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
  
      Ok(tls_stream)
  }
+diff --git a/wstunnel/src/protocols/tls/utils.rs b/wstunnel/src/protocols/tls/utils.rs
+index 9941292..c260140 100644
 --- a/wstunnel/src/protocols/tls/utils.rs
 +++ b/wstunnel/src/protocols/tls/utils.rs
 @@ -1,9 +1,10 @@
@@ -959,9 +977,11 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
  /// Returns the common name (CN) as specified in the supplied certificate.
  pub fn cn_from_certificate(tls_certificate_x509: &X509Certificate) -> Option<String> {
      tls_certificate_x509
+diff --git a/wstunnel/src/test_integrations.rs b/wstunnel/src/test_integrations.rs
+index 967a13a..5f69f1d 100644
 --- a/wstunnel/src/test_integrations.rs
 +++ b/wstunnel/src/test_integrations.rs
-@@ -61,9 +61,9 @@ fn dns_resolver() -> DnsResolver {
+@@ -67,9 +67,9 @@ fn dns_resolver() -> DnsResolver {
      // Whichever provider the crate was built with, as only one of the two is compiled in.
      // Installing twice is expected across fixtures, hence the ignored result.
      #[cfg(feature = "aws-lc-rs")]
@@ -973,7 +993,7 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
  
      DnsResolver::new_from_urls(&[], None, SoMark::new(None), true).expect("Cannot create DNS resolver")
  }
-@@ -98,7 +98,7 @@ fn server_webtransport(dns_resolver: DnsResolver) -> Server {
+@@ -104,7 +104,7 @@ fn server_webtransport(dns_resolver: DnsResolver) -> Server {
          websocket_mask_frame: false,
          tls: Some(TlsServerConfig {
              tls_certificate: parking_lot::Mutex::new(embedded_certificate::TLS_CERTIFICATE.0.clone()),
@@ -982,7 +1002,7 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
              tls_client_ca_certificates: None,
              tls_certificate_path: None,
              tls_key_path: None,
-@@ -118,8 +118,7 @@ fn server_webtransport(dns_resolver: DnsResolver) -> Server {
+@@ -124,8 +124,7 @@ fn server_webtransport(dns_resolver: DnsResolver) -> Server {
  async fn client_webtransport(server_port: u16, dns_resolver: DnsResolver) -> Client {
      // The embedded certificate is self-signed with no SAN, so verification must be off.
      let tls_connector =
@@ -992,6 +1012,8 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
      let tls = TlsClientConfig {
          tls_sni_disabled: false,
          tls_sni_override: None,
+diff --git a/wstunnel/src/tunnel/ca_reloader.rs b/wstunnel/src/tunnel/ca_reloader.rs
+index 9183e5f..2105c5d 100644
 --- a/wstunnel/src/tunnel/ca_reloader.rs
 +++ b/wstunnel/src/tunnel/ca_reloader.rs
 @@ -1,7 +1,7 @@
@@ -1024,6 +1046,8 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
          }
      }
  
+diff --git a/wstunnel/src/tunnel/client/config.rs b/wstunnel/src/tunnel/client/config.rs
+index a5e5025..0ff9527 100644
 --- a/wstunnel/src/tunnel/client/config.rs
 +++ b/wstunnel/src/tunnel/client/config.rs
 @@ -1,16 +1,14 @@
@@ -1088,6 +1112,8 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
      pub tls_verify_certificate: bool,
      pub tls_connector: Arc<RwLock<TlsConnector>>,
      pub tls_certificate_path: Option<PathBuf>,
+diff --git a/wstunnel/src/tunnel/client/connection_pool/l4_stream.rs b/wstunnel/src/tunnel/client/connection_pool/l4_stream.rs
+index 04332b3..1f10a41 100644
 --- a/wstunnel/src/tunnel/client/connection_pool/l4_stream.rs
 +++ b/wstunnel/src/tunnel/client/connection_pool/l4_stream.rs
 @@ -23,7 +23,7 @@ impl L4Stream {
@@ -1189,6 +1215,8 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
          }
      }
  }
+diff --git a/wstunnel/src/tunnel/server/handler_webtransport.rs b/wstunnel/src/tunnel/server/handler_webtransport.rs
+index cdd59ee..81f10d0 100644
 --- a/wstunnel/src/tunnel/server/handler_webtransport.rs
 +++ b/wstunnel/src/tunnel/server/handler_webtransport.rs
 @@ -15,11 +15,11 @@ use anyhow::{Context, anyhow};
@@ -1204,6 +1232,8 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
  use tracing::{Instrument, Level, Span, debug, error, info, span, warn};
  use uuid::Uuid;
  use web_transport_quinn::quinn;
+diff --git a/wstunnel/src/tunnel/server/server.rs b/wstunnel/src/tunnel/server/server.rs
+index 0aeddcb..b02d188 100644
 --- a/wstunnel/src/tunnel/server/server.rs
 +++ b/wstunnel/src/tunnel/server/server.rs
 @@ -1,7 +1,7 @@
@@ -1261,6 +1291,8 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
                              // http2
                              Some(b"h2") => {
                                  let mut conn_builder = http2::Builder::new(TokioExecutor::new());
+diff --git a/wstunnel/src/tunnel/tls_reloader.rs b/wstunnel/src/tunnel/tls_reloader.rs
+index 79b9ccc..77e4d3b 100644
 --- a/wstunnel/src/tunnel/tls_reloader.rs
 +++ b/wstunnel/src/tunnel/tls_reloader.rs
 @@ -143,7 +143,6 @@ impl TlsReloaderClientState {
@@ -1271,6 +1303,8 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
              Some(tls_certs),
              Some(tls_key),
          )?;
+diff --git a/wstunnel/src/tunnel/transport/websocket.rs b/wstunnel/src/tunnel/transport/websocket.rs
+index 7bab1cb..16350da 100644
 --- a/wstunnel/src/tunnel/transport/websocket.rs
 +++ b/wstunnel/src/tunnel/transport/websocket.rs
 @@ -27,7 +27,7 @@ use tokio::net::TcpStream;
@@ -1300,9 +1334,11 @@ Subject: Switch TCP TLS to BoringSSL so websocket and HTTP2 tunnels no longer
                  Ok(stream) => {
                      let transport = L4Stream::from_server_tls(stream.io.into_inner(), stream.read_buf);
                      WebSocket::after_handshake(transport, role)
+diff --git a/wstunnel/src/tunnel/transport/webtransport/endpoint.rs b/wstunnel/src/tunnel/transport/webtransport/endpoint.rs
+index 22dd0a7..5b05a2e 100644
 --- a/wstunnel/src/tunnel/transport/webtransport/endpoint.rs
 +++ b/wstunnel/src/tunnel/transport/webtransport/endpoint.rs
-@@ -23,7 +23,7 @@ pub struct WebTransportEndpoint {
+@@ -26,7 +26,7 @@ pub struct WebTransportEndpoint {
  
  impl WebTransportEndpoint {
      pub fn new(
